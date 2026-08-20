@@ -67,7 +67,7 @@ jobs:
           Write-Host "Admin account ready."
 
       # ==========================================
-      # 3. Install & Connect Tailscale
+      # 3. Install & Connect Tailscale VPN
       # ==========================================
       - name: 3. Install & Connect Tailscale VPN
         env:
@@ -160,31 +160,101 @@ jobs:
           Write-Host "MongoDB service found."
 
       # ==========================================
-      # 5. Start MongoDB
+      # 5. Start MongoDB Directly
       # ==========================================
       - name: 5. Start MongoDB
         shell: powershell
         run: |
 
-          Write-Host "Starting MongoDB..."
+          Write-Host "Preparing MongoDB data directory..."
 
-          Start-Service MongoDB
+          $MongoData = "C:\MongoDB\data\db"
 
-          Set-Service `
-            -Name MongoDB `
-            -StartupType Automatic
-
-          Start-Sleep -Seconds 10
-
-          $Service = Get-Service MongoDB
-
-          Write-Host "MongoDB Status: $($Service.Status)"
-
-          if ($Service.Status -ne "Running") {
-              throw "MongoDB failed to start."
+          if (Test-Path "C:\MongoDB") {
+              Remove-Item `
+                "C:\MongoDB" `
+                -Recurse `
+                -Force
           }
 
-          Write-Host "MongoDB is running."
+          New-Item `
+            -ItemType Directory `
+            -Path $MongoData `
+            -Force | Out-Null
+
+          $MongoExe = "C:\Program Files\MongoDB\Server\8.0\bin\mongod.exe"
+
+          if (!(Test-Path $MongoExe)) {
+              throw "mongod.exe was not found at: $MongoExe"
+          }
+
+          Write-Host "MongoDB executable:"
+          Write-Host $MongoExe
+
+          Write-Host "Starting MongoDB..."
+
+          $MongoProcess = Start-Process `
+            -FilePath $MongoExe `
+            -ArgumentList "--dbpath `"$MongoData`" --bind_ip 127.0.0.1 --port 27017" `
+            -WindowStyle Hidden `
+            -PassThru
+
+          Write-Host "MongoDB PID: $($MongoProcess.Id)"
+
+          Write-Host "Waiting for MongoDB..."
+
+          $MongoReady = $false
+
+          for ($i = 1; $i -le 30; $i++) {
+
+              Start-Sleep -Seconds 1
+
+              try {
+
+                  $Connection = Test-NetConnection `
+                    -ComputerName "127.0.0.1" `
+                    -Port 27017 `
+                    -WarningAction SilentlyContinue
+
+                  if ($Connection.TcpTestSucceeded) {
+
+                      $MongoReady = $true
+
+                      Write-Host "MongoDB is listening on port 27017."
+
+                      break
+                  }
+
+              }
+              catch {
+                  # MongoDB is not ready yet
+              }
+
+              Write-Host "Waiting for MongoDB... [$i/30]"
+          }
+
+          if (!$MongoReady) {
+
+              Write-Host ""
+              Write-Host "MongoDB failed to start."
+              Write-Host ""
+
+              if (!$MongoProcess.HasExited) {
+                  Stop-Process `
+                    -Id $MongoProcess.Id `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+              }
+
+              throw "MongoDB did not start on port 27017."
+          }
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> MONGODB IS RUNNING <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "Address: mongodb://127.0.0.1:27017"
+          Write-Host "PID    : $($MongoProcess.Id)"
 
       # ==========================================
       # 6. Download MongoDB Backup
@@ -217,7 +287,7 @@ jobs:
           }
 
       # ==========================================
-      # 7. Extract Backup
+      # 7. Extract MongoDB Backup
       # ==========================================
       - name: 7. Extract MongoDB Backup
         env:
@@ -279,6 +349,7 @@ jobs:
 
           Write-Host ""
           Write-Host "Extracted files:"
+
           Get-ChildItem `
             $ExtractPath `
             -Recurse `
@@ -342,6 +413,7 @@ jobs:
           )
 
           foreach ($Path in $PossiblePaths) {
+
               if (Test-Path $Path) {
                   $MongoRestore = $Path
                   break
@@ -364,6 +436,7 @@ jobs:
               $ToolsExtract = "C:\MongoDBTools"
 
               if (Test-Path $ToolsExtract) {
+
                   Remove-Item `
                     $ToolsExtract `
                     -Recurse `
@@ -421,6 +494,7 @@ jobs:
           Write-Host "Preparing repository directory..."
 
           if (Test-Path "D:\PeykLinkbot") {
+
               Remove-Item `
                 "D:\PeykLinkbot" `
                 -Recurse `
@@ -555,7 +629,6 @@ jobs:
               Start-Sleep -Seconds 60
 
               Write-Host "[$i/360] Server running..."
-
           }
 
           Write-Host ""
