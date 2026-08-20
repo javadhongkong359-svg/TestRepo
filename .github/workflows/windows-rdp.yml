@@ -3,55 +3,222 @@ name: Windows Cloud RDP
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: '0 */6 * * *'
+
 jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
+
+      # ==========================================
+      # 1. Enable Remote Desktop & Firewall
+      # ==========================================
       - name: 1. Enable Remote Desktop & Firewall
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" `
+            -Value 0
 
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" `
+            -Value 0
+
+      # ==========================================
+      # 2. Create Admin Account
+      # ==========================================
       - name: 2. Create Admin Account
         run: |
           $Password = ConvertTo-SecureString "Cynet@2026" -AsPlainText -Force
-          New-LocalUser -Name "CynetAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "CynetAdmin" -ErrorAction SilentlyContinue
+
+          New-LocalUser `
+            -Name "CynetAdmin" `
+            -Password $Password `
+            -PasswordNeverExpires `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member "CynetAdmin" `
+            -ErrorAction SilentlyContinue
+
           net user runneradmin Cynet@2026
 
+      # ==========================================
+      # 3. Install & Connect Tailscale
+      # ==========================================
       - name: 3. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # Download and install Tailscale silently
-          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
-          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
-          
-          # Connect to Tailscale network
-          Start-Sleep -Seconds 5
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
-          
-          Start-Sleep -Seconds 8
-          
-          # Get Tailscale IP
+
+          Write-Host "Downloading Tailscale..."
+
+          Invoke-WebRequest `
+            "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -OutFile "C:\tailscale.msi"
+
+          Write-Host "Installing Tailscale..."
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i C:\tailscale.msi /quiet /norestart" `
+            -Wait
+
+          Write-Host "Waiting for Tailscale..."
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "Connecting to Tailscale..."
+
+          & "C:\Program Files\Tailscale\tailscale.exe" up `
+            --authkey="$Env:TAILSCALE_AUTHKEY" `
+            --hostname="github-rdp-server"
+
+          Start-Sleep -Seconds 10
+
           $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          
+
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
-          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Username     : CynetAdmin" -ForegroundColor Yellow
-          Write-Host "  Password     : Cynet@2026" -ForegroundColor Yellow
-          Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
+          Write-Host "       >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "Tailscale IP : $ts_ip" -ForegroundColor Yellow
+          Write-Host "Username     : CynetAdmin" -ForegroundColor Yellow
+          Write-Host "Password     : Cynet@2026" -ForegroundColor Yellow
+          Write-Host ""
+          Write-Host "Open Remote Desktop (mstsc)" -ForegroundColor Magenta
+          Write-Host "Connect to: $ts_ip" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
-      - name: 4. Keep Server Alive (6 Hours)
+      # ==========================================
+      # 4. Clone PeykLinkbot Repository
+      # ==========================================
+      - name: 4. Clone PeykLinkbot Repository
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          for ($i = 1; $i -le 360; $i++) {
-            Start-Sleep -Seconds 60
-            Write-Host "[$i/360] Server running..."
+
+          Write-Host "Preparing repository directory..."
+
+          if (Test-Path "D:\PeykLinkbot") {
+              Remove-Item "D:\PeykLinkbot" -Recurse -Force
           }
 
+          Write-Host "Cloning repository..."
+
+          git clone `
+            https://x-access-token:$Env:GH_TOKEN@github.com/javadnoruzi/PeykLinkbot.git `
+            D:\PeykLinkbot
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Git clone failed."
+          }
+
+          Write-Host "Repository cloned successfully."
+
+      # ==========================================
+      # 5. Restore .NET Dependencies
+      # ==========================================
+      - name: 5. Restore .NET Dependencies
+        run: |
+
+          cd D:\PeykLinkbot
+
+          Write-Host "Running dotnet restore..."
+
+          dotnet restore
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "dotnet restore failed."
+          }
+
+          Write-Host "Restore completed successfully."
+
+      # ==========================================
+      # 6. Build PeykLink.Api
+      # ==========================================
+      - name: 6. Build PeykLink.Api
+        run: |
+
+          cd D:\PeykLinkbot
+
+          Write-Host "Building PeykLink.Api..."
+
+          dotnet build `
+            .\src\PeykLink.Api\PeykLink.Api.csproj `
+            -c Debug `
+            --no-restore
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "dotnet build failed."
+          }
+
+          Write-Host "Build completed successfully."
+
+      # ==========================================
+      # 7. Run PeykLink.Api
+      # ==========================================
+      - name: 7. Run PeykLink.Api
+        run: |
+
+          $AppPath = "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0\PeykLink.Api.exe"
+
+          if (!(Test-Path $AppPath)) {
+              Write-Host "ERROR: Application not found!"
+              Write-Host ""
+              Write-Host "Expected path:"
+              Write-Host $AppPath
+              Write-Host ""
+              Write-Host "Checking bin directory..."
+
+              if (Test-Path "D:\PeykLinkbot\src\PeykLink.Api\bin") {
+                  Get-ChildItem `
+                    "D:\PeykLinkbot\src\PeykLink.Api\bin" `
+                    -Recurse
+              }
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> STARTING PEYKLINK API <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "Application: $AppPath"
+          Write-Host ""
+
+          Start-Process `
+            -FilePath $AppPath `
+            -WorkingDirectory "D:\PeykLinkbot\src\PeykLink.Api"
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "PeykLink.Api started successfully."
+
+      # ==========================================
+      # 8. Keep Server Alive - 6 Hours
+      # ==========================================
+      - name: 8. Keep Server Alive
+        run: |
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> SERVER IS RUNNING <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Green
+
+          for ($i = 1; $i -le 360; $i++) {
+
+              Start-Sleep -Seconds 60
+
+              Write-Host "[$i/360] Server running..."
+
+          }
+
+          Write-Host "6 hours completed."
