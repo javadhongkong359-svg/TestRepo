@@ -17,25 +17,39 @@ jobs:
       # 1. Enable Remote Desktop & Firewall
       # ==========================================
       - name: 1. Enable Remote Desktop & Firewall
+        shell: powershell
         run: |
+
+          Write-Host "Enabling Remote Desktop..."
+
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name "fDenyTSConnections" `
             -Value 0
 
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "UserAuthentication" `
             -Value 0
 
+          Write-Host "Remote Desktop enabled."
+
       # ==========================================
       # 2. Create Admin Account
       # ==========================================
       - name: 2. Create Admin Account
+        shell: powershell
         run: |
-          $Password = ConvertTo-SecureString "Cynet@2026" -AsPlainText -Force
+
+          Write-Host "Creating CynetAdmin..."
+
+          $Password = ConvertTo-SecureString `
+            "Cynet@2026" `
+            -AsPlainText `
+            -Force
 
           New-LocalUser `
             -Name "CynetAdmin" `
@@ -50,12 +64,15 @@ jobs:
 
           net user runneradmin Cynet@2026
 
+          Write-Host "Admin account ready."
+
       # ==========================================
       # 3. Install & Connect Tailscale
       # ==========================================
       - name: 3. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        shell: powershell
         run: |
 
           Write-Host "Downloading Tailscale..."
@@ -71,11 +88,9 @@ jobs:
             -ArgumentList "/i C:\tailscale.msi /quiet /norestart" `
             -Wait
 
-          Write-Host "Waiting for Tailscale..."
-
           Start-Sleep -Seconds 10
 
-          Write-Host "Connecting to Tailscale..."
+          Write-Host "Connecting Tailscale..."
 
           & "C:\Program Files\Tailscale\tailscale.exe" up `
             --authkey="$Env:TAILSCALE_AUTHKEY" `
@@ -83,7 +98,9 @@ jobs:
 
           Start-Sleep -Seconds 10
 
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          $ts_ip = & `
+            "C:\Program Files\Tailscale\tailscale.exe" `
+            ip -4
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
@@ -93,29 +110,328 @@ jobs:
           Write-Host "Username     : CynetAdmin" -ForegroundColor Yellow
           Write-Host "Password     : Cynet@2026" -ForegroundColor Yellow
           Write-Host ""
-          Write-Host "Open Remote Desktop (mstsc)" -ForegroundColor Magenta
-          Write-Host "Connect to: $ts_ip" -ForegroundColor Magenta
+          Write-Host "Connect using Remote Desktop:"
+          Write-Host "mstsc -> $ts_ip"
           Write-Host "==================================================" -ForegroundColor Green
 
       # ==========================================
-      # 4. Clone PeykLinkbot Repository
+      # 4. Install MongoDB
       # ==========================================
-      - name: 4. Clone PeykLinkbot Repository
+      - name: 4. Install MongoDB
+        shell: powershell
+        run: |
+
+          $MongoVersion = "8.0.28"
+
+          $MongoUrl = `
+            "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$MongoVersion-signed.msi"
+
+          $MongoMsi = "C:\mongodb.msi"
+
+          Write-Host "Downloading MongoDB $MongoVersion..."
+
+          Invoke-WebRequest `
+            -Uri $MongoUrl `
+            -OutFile $MongoMsi
+
+          if (!(Test-Path $MongoMsi)) {
+              throw "MongoDB MSI download failed."
+          }
+
+          Write-Host "Installing MongoDB..."
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i `"$MongoMsi`" /qn /norestart" `
+            -Wait
+
+          Start-Sleep -Seconds 10
+
+          Write-Host "Checking MongoDB service..."
+
+          $MongoService = Get-Service `
+            -Name "MongoDB" `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $MongoService) {
+              throw "MongoDB service was not found."
+          }
+
+          Write-Host "MongoDB service found."
+
+      # ==========================================
+      # 5. Start MongoDB
+      # ==========================================
+      - name: 5. Start MongoDB
+        shell: powershell
+        run: |
+
+          Write-Host "Starting MongoDB..."
+
+          Start-Service MongoDB
+
+          Set-Service `
+            -Name MongoDB `
+            -StartupType Automatic
+
+          Start-Sleep -Seconds 10
+
+          $Service = Get-Service MongoDB
+
+          Write-Host "MongoDB Status: $($Service.Status)"
+
+          if ($Service.Status -ne "Running") {
+              throw "MongoDB failed to start."
+          }
+
+          Write-Host "MongoDB is running."
+
+      # ==========================================
+      # 6. Download MongoDB Backup
+      # ==========================================
+      - name: 6. Download MongoDB Backup
+        shell: powershell
+        run: |
+
+          $BackupUrl = "http://2193182619.cloudydl.com/peyklink/peyklink-backup.zip"
+
+          $BackupZip = "C:\peyklink-backup.zip"
+
+          Write-Host "Downloading MongoDB backup..."
+
+          Invoke-WebRequest `
+            -Uri $BackupUrl `
+            -OutFile $BackupZip
+
+          if (!(Test-Path $BackupZip)) {
+              throw "Backup file was not downloaded."
+          }
+
+          $Size = (Get-Item $BackupZip).Length
+
+          Write-Host "Backup downloaded."
+          Write-Host "Size: $Size bytes"
+
+          if ($Size -eq 0) {
+              throw "Backup file is empty."
+          }
+
+      # ==========================================
+      # 7. Extract Backup
+      # ==========================================
+      - name: 7. Extract MongoDB Backup
+        env:
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+        shell: powershell
+        run: |
+
+          $BackupZip = "C:\peyklink-backup.zip"
+          $ExtractPath = "C:\PeykLinkMongoBackup"
+
+          Write-Host "Preparing extraction directory..."
+
+          if (Test-Path $ExtractPath) {
+              Remove-Item `
+                $ExtractPath `
+                -Recurse `
+                -Force
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Path $ExtractPath `
+            -Force | Out-Null
+
+          # Find 7-Zip
+          $SevenZip = "C:\Program Files\7-Zip\7z.exe"
+
+          if (!(Test-Path $SevenZip)) {
+
+              Write-Host "7-Zip not found. Installing 7-Zip..."
+
+              winget install `
+                --id 7zip.7zip `
+                --exact `
+                --silent `
+                --accept-package-agreements `
+                --accept-source-agreements
+
+              Start-Sleep -Seconds 5
+          }
+
+          if (!(Test-Path $SevenZip)) {
+              throw "7-Zip was not found after installation."
+          }
+
+          Write-Host "Extracting encrypted backup..."
+
+          & $SevenZip x `
+            $BackupZip `
+            "-o$ExtractPath" `
+            "-p$Env:BACKUP_PASSWORD" `
+            "-y"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Backup extraction failed. Check BACKUP_PASSWORD."
+          }
+
+          Write-Host "Backup extracted successfully."
+
+          Write-Host ""
+          Write-Host "Extracted files:"
+          Get-ChildItem `
+            $ExtractPath `
+            -Recurse `
+            | Select-Object FullName, Length
+
+      # ==========================================
+      # 8. Restore MongoDB
+      # ==========================================
+      - name: 8. Restore MongoDB
+        shell: powershell
+        run: |
+
+          Write-Host "Searching for MongoDB dump..."
+
+          $ExtractPath = "C:\PeykLinkMongoBackup"
+
+          # Find first BSON file
+          $BsonFile = Get-ChildItem `
+            $ExtractPath `
+            -Recurse `
+            -Filter "*.bson" `
+            -File `
+            | Select-Object -First 1
+
+          if ($null -eq $BsonFile) {
+              throw "No BSON files were found in the backup."
+          }
+
+          Write-Host "Found BSON:"
+          Write-Host $BsonFile.FullName
+
+          # Standard mongodump structure:
+          #
+          # dump/
+          #   database/
+          #      collection.bson
+          #
+          # Therefore:
+          # BSON parent      = database
+          # database parent  = dump
+
+          $DatabaseFolder = Split-Path `
+            $BsonFile.FullName `
+            -Parent
+
+          $DumpFolder = Split-Path `
+            $DatabaseFolder `
+            -Parent
+
+          Write-Host ""
+          Write-Host "MongoDB dump directory:"
+          Write-Host $DumpFolder
+
+          # Find mongorestore
+          $MongoRestore = $null
+
+          $PossiblePaths = @(
+              "C:\Program Files\MongoDB\Tools\100\bin\mongorestore.exe",
+              "C:\Program Files\MongoDB\Tools\100.16\bin\mongorestore.exe",
+              "C:\Program Files\MongoDB\Tools\100.16.1\bin\mongorestore.exe"
+          )
+
+          foreach ($Path in $PossiblePaths) {
+              if (Test-Path $Path) {
+                  $MongoRestore = $Path
+                  break
+              }
+          }
+
+          # If not installed, download MongoDB Database Tools
+          if ($null -eq $MongoRestore) {
+
+              Write-Host "MongoDB Database Tools not found."
+
+              $ToolsZip = "C:\mongodb-tools.zip"
+
+              Write-Host "Downloading MongoDB Database Tools..."
+
+              Invoke-WebRequest `
+                "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-windows-x86_64-100.16.1.zip" `
+                -OutFile $ToolsZip
+
+              $ToolsExtract = "C:\MongoDBTools"
+
+              if (Test-Path $ToolsExtract) {
+                  Remove-Item `
+                    $ToolsExtract `
+                    -Recurse `
+                    -Force
+              }
+
+              Expand-Archive `
+                -Path $ToolsZip `
+                -DestinationPath $ToolsExtract `
+                -Force
+
+              $MongoRestore = Get-ChildItem `
+                $ToolsExtract `
+                -Recurse `
+                -Filter "mongorestore.exe" `
+                -File `
+                | Select-Object -First 1 `
+                | Select-Object -ExpandProperty FullName
+          }
+
+          if ($null -eq $MongoRestore -or !(Test-Path $MongoRestore)) {
+              throw "mongorestore.exe was not found."
+          }
+
+          Write-Host ""
+          Write-Host "mongorestore:"
+          Write-Host $MongoRestore
+
+          Write-Host ""
+          Write-Host "Restoring MongoDB..."
+
+          & $MongoRestore `
+            --host "127.0.0.1:27017" `
+            --drop `
+            "$DumpFolder"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "MongoDB restore failed."
+          }
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> MONGODB RESTORE COMPLETED <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Green
+
+      # ==========================================
+      # 9. Clone PeykLinkbot Repository
+      # ==========================================
+      - name: 9. Clone PeykLinkbot Repository
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        shell: powershell
         run: |
 
           Write-Host "Preparing repository directory..."
 
           if (Test-Path "D:\PeykLinkbot") {
-              Remove-Item "D:\PeykLinkbot" -Recurse -Force
+              Remove-Item `
+                "D:\PeykLinkbot" `
+                -Recurse `
+                -Force
           }
 
           Write-Host "Cloning repository..."
 
           git clone `
-            https://x-access-token:$Env:GH_TOKEN@github.com/javadnoruzi/PeykLinkbot.git `
-            D:\PeykLinkbot
+            "https://x-access-token:$Env:GH_TOKEN@github.com/javadnoruzi/PeykLinkbot.git" `
+            "D:\PeykLinkbot"
 
           if ($LASTEXITCODE -ne 0) {
               throw "Git clone failed."
@@ -124,9 +440,10 @@ jobs:
           Write-Host "Repository cloned successfully."
 
       # ==========================================
-      # 5. Restore .NET Dependencies
+      # 10. Restore .NET Dependencies
       # ==========================================
-      - name: 5. Restore .NET Dependencies
+      - name: 10. Restore .NET Dependencies
+        shell: powershell
         run: |
 
           cd D:\PeykLinkbot
@@ -142,9 +459,10 @@ jobs:
           Write-Host "Restore completed successfully."
 
       # ==========================================
-      # 6. Build PeykLink.Api
+      # 11. Build PeykLink.Api
       # ==========================================
-      - name: 6. Build PeykLink.Api
+      - name: 11. Build PeykLink.Api
+        shell: powershell
         run: |
 
           cd D:\PeykLinkbot
@@ -163,28 +481,33 @@ jobs:
           Write-Host "Build completed successfully."
 
       # ==========================================
-      # 7. Run PeykLink.Api
+      # 12. Run PeykLink.Api
       # ==========================================
-      - name: 7. Run PeykLink.Api
+      - name: 12. Run PeykLink.Api
+        shell: powershell
         run: |
 
-          $AppPath = "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0\PeykLink.Api.exe"
+          $AppPath = `
+            "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0\PeykLink.Api.exe"
 
           if (!(Test-Path $AppPath)) {
+
               Write-Host "ERROR: Application not found!"
               Write-Host ""
               Write-Host "Expected path:"
               Write-Host $AppPath
               Write-Host ""
+
               Write-Host "Checking bin directory..."
 
               if (Test-Path "D:\PeykLinkbot\src\PeykLink.Api\bin") {
+
                   Get-ChildItem `
                     "D:\PeykLinkbot\src\PeykLink.Api\bin" `
                     -Recurse
               }
 
-              exit 1
+              throw "PeykLink.Api executable not found."
           }
 
           Write-Host ""
@@ -194,24 +517,38 @@ jobs:
           Write-Host "Application: $AppPath"
           Write-Host ""
 
-          Start-Process `
+          $Process = Start-Process `
             -FilePath $AppPath `
-            -WorkingDirectory "D:\PeykLinkbot\src\PeykLink.Api"
+            -WorkingDirectory `
+            "D:\PeykLinkbot\src\PeykLink.Api" `
+            -PassThru
 
           Start-Sleep -Seconds 10
 
+          if ($Process.HasExited) {
+              throw "PeykLink.Api stopped immediately. ExitCode: $($Process.ExitCode)"
+          }
+
           Write-Host "PeykLink.Api started successfully."
+          Write-Host "PID: $($Process.Id)"
 
       # ==========================================
-      # 8. Keep Server Alive - 6 Hours
+      # 13. Keep Server Alive - 6 Hours
       # ==========================================
-      - name: 8. Keep Server Alive
+      - name: 13. Keep Server Alive
+        shell: powershell
         run: |
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> SERVER IS RUNNING <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
+
+          Write-Host ""
+          Write-Host "RDP User     : CynetAdmin"
+          Write-Host "MongoDB      : 127.0.0.1:27017"
+          Write-Host "Application  : PeykLink.Api"
+          Write-Host ""
 
           for ($i = 1; $i -le 360; $i++) {
 
@@ -221,4 +558,5 @@ jobs:
 
           }
 
+          Write-Host ""
           Write-Host "6 hours completed."
