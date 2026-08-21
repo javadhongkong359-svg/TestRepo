@@ -372,14 +372,14 @@ jobs:
           Write-Host "Mongo  : $MongoExe"
           Write-Host "==================================================" -ForegroundColor Green
 
-      # ==========================================
+           # ==========================================
       # 6. Download MongoDB Backup
       # ==========================================
       - name: 6. Download MongoDB Backup
         shell: powershell
         run: |
 
-          $BackupUrl = "http://2193182619.cloudydl.com/peyklink/peyklink-backup.zip"
+          $BackupUrl = "https://uploadkon.ir/uploads/45ac21_26peyklink-backup.zip"
 
           $BackupZip = "C:\peyklink-backup.zip"
 
@@ -401,13 +401,10 @@ jobs:
           if ($Size -eq 0) {
               throw "Backup file is empty."
           }
-
-      # ==========================================
+          # ==========================================
       # 7. Extract MongoDB Backup
       # ==========================================
       - name: 7. Extract MongoDB Backup
-        env:
-          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         shell: powershell
         run: |
 
@@ -428,37 +425,15 @@ jobs:
             -Path $ExtractPath `
             -Force | Out-Null
 
-          # Find 7-Zip
-          $SevenZip = "C:\Program Files\7-Zip\7z.exe"
+          Write-Host "Extracting backup..."
 
-          if (!(Test-Path $SevenZip)) {
-
-              Write-Host "7-Zip not found. Installing 7-Zip..."
-
-              winget install `
-                --id 7zip.7zip `
-                --exact `
-                --silent `
-                --accept-package-agreements `
-                --accept-source-agreements
-
-              Start-Sleep -Seconds 5
-          }
-
-          if (!(Test-Path $SevenZip)) {
-              throw "7-Zip was not found after installation."
-          }
-
-          Write-Host "Extracting encrypted backup..."
-
-          & $SevenZip x `
-            $BackupZip `
-            "-o$ExtractPath" `
-            "-p$Env:BACKUP_PASSWORD" `
-            "-y"
+          Expand-Archive `
+            -Path $BackupZip `
+            -DestinationPath $ExtractPath `
+            -Force
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Backup extraction failed. Check BACKUP_PASSWORD."
+              throw "Backup extraction failed."
           }
 
           Write-Host "Backup extracted successfully."
@@ -470,7 +445,6 @@ jobs:
             $ExtractPath `
             -Recurse `
             | Select-Object FullName, Length
-
       # ==========================================
       # 8. Restore MongoDB
       # ==========================================
