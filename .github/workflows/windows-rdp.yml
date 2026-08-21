@@ -159,7 +159,7 @@ jobs:
 
           Write-Host "MongoDB service found."
 
-      # ==========================================
+           # ==========================================
       # 5. Start MongoDB Directly
       # ==========================================
       - name: 5. Start MongoDB
@@ -171,6 +171,9 @@ jobs:
           $MongoData = "C:\MongoDB\data\db"
 
           if (Test-Path "C:\MongoDB") {
+
+              Write-Host "Removing old MongoDB directory..."
+
               Remove-Item `
                 "C:\MongoDB" `
                 -Recurse `
@@ -182,14 +185,97 @@ jobs:
             -Path $MongoData `
             -Force | Out-Null
 
-          $MongoExe = "C:\Program Files\MongoDB\Server\8.0\bin\mongod.exe"
+          Write-Host "Searching for mongod.exe..."
 
-          if (!(Test-Path $MongoExe)) {
-              throw "mongod.exe was not found at: $MongoExe"
+          # ==========================================
+          # Find mongod.exe automatically
+          # ==========================================
+
+          $MongoExe = $null
+
+          $MongoSearchPaths = @(
+              "C:\Program Files\MongoDB",
+              "C:\Program Files (x86)\MongoDB"
+          )
+
+          foreach ($SearchPath in $MongoSearchPaths) {
+
+              if (Test-Path $SearchPath) {
+
+                  Write-Host "Searching in: $SearchPath"
+
+                  $FoundMongo = Get-ChildItem `
+                    -Path $SearchPath `
+                    -Recurse `
+                    -Filter "mongod.exe" `
+                    -File `
+                    -ErrorAction SilentlyContinue `
+                    | Select-Object -First 1
+
+                  if ($null -ne $FoundMongo) {
+
+                      $MongoExe = $FoundMongo.FullName
+
+                      break
+                  }
+              }
           }
 
+          # ==========================================
+          # If mongod.exe was not found
+          # ==========================================
+
+          if ($null -eq $MongoExe) {
+
+              Write-Host ""
+              Write-Host "ERROR: mongod.exe was not found." -ForegroundColor Red
+              Write-Host ""
+
+              Write-Host "Checking MongoDB installation directories..."
+
+              if (Test-Path "C:\Program Files\MongoDB") {
+
+                  Get-ChildItem `
+                    "C:\Program Files\MongoDB" `
+                    -Recurse `
+                    -ErrorAction SilentlyContinue `
+                    | Select-Object FullName
+              }
+              else {
+
+                  Write-Host "C:\Program Files\MongoDB does not exist."
+              }
+
+              Write-Host ""
+
+              if (Test-Path "C:\Program Files (x86)\MongoDB") {
+
+                  Write-Host "Checking x86 MongoDB directory..."
+
+                  Get-ChildItem `
+                    "C:\Program Files (x86)\MongoDB" `
+                    -Recurse `
+                    -ErrorAction SilentlyContinue `
+                    | Select-Object FullName
+              }
+
+              throw "mongod.exe was not found on this Windows Runner."
+          }
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> MONGODB EXECUTABLE FOUND <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Green
           Write-Host "MongoDB executable:"
           Write-Host $MongoExe
+          Write-Host ""
+          Write-Host "Data directory:"
+          Write-Host $MongoData
+          Write-Host ""
+
+          # ==========================================
+          # Start MongoDB
+          # ==========================================
 
           Write-Host "Starting MongoDB..."
 
@@ -201,6 +287,11 @@ jobs:
 
           Write-Host "MongoDB PID: $($MongoProcess.Id)"
 
+          # ==========================================
+          # Wait for MongoDB
+          # ==========================================
+
+          Write-Host ""
           Write-Host "Waiting for MongoDB..."
 
           $MongoReady = $false
@@ -208,6 +299,16 @@ jobs:
           for ($i = 1; $i -le 30; $i++) {
 
               Start-Sleep -Seconds 1
+
+              # Check if process crashed
+              if ($MongoProcess.HasExited) {
+
+                  Write-Host ""
+                  Write-Host "MongoDB process exited unexpectedly." -ForegroundColor Red
+                  Write-Host "Exit code: $($MongoProcess.ExitCode)"
+
+                  throw "MongoDB process stopped unexpectedly."
+              }
 
               try {
 
@@ -220,7 +321,8 @@ jobs:
 
                       $MongoReady = $true
 
-                      Write-Host "MongoDB is listening on port 27017."
+                      Write-Host ""
+                      Write-Host "MongoDB is listening on port 27017." -ForegroundColor Green
 
                       break
                   }
@@ -233,13 +335,20 @@ jobs:
               Write-Host "Waiting for MongoDB... [$i/30]"
           }
 
+          # ==========================================
+          # MongoDB failed
+          # ==========================================
+
           if (!$MongoReady) {
 
               Write-Host ""
-              Write-Host "MongoDB failed to start."
+              Write-Host "==================================================" -ForegroundColor Red
+              Write-Host "       >>> MONGODB FAILED TO START <<<" -ForegroundColor Red
+              Write-Host "==================================================" -ForegroundColor Red
               Write-Host ""
 
               if (!$MongoProcess.HasExited) {
+
                   Stop-Process `
                     -Id $MongoProcess.Id `
                     -Force `
@@ -249,12 +358,19 @@ jobs:
               throw "MongoDB did not start on port 27017."
           }
 
+          # ==========================================
+          # MongoDB Ready
+          # ==========================================
+
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> MONGODB IS RUNNING <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "Address: mongodb://127.0.0.1:27017"
           Write-Host "PID    : $($MongoProcess.Id)"
+          Write-Host "Data   : $MongoData"
+          Write-Host "Mongo  : $MongoExe"
+          Write-Host "==================================================" -ForegroundColor Green
 
       # ==========================================
       # 6. Download MongoDB Backup
