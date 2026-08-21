@@ -401,23 +401,53 @@ jobs:
           if ($Size -eq 0) {
               throw "Backup file is empty."
           }
-          # ==========================================
+              # ==========================================
       # 7. Extract MongoDB Backup
       # ==========================================
       - name: 7. Extract MongoDB Backup
+        env:
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         shell: powershell
         run: |
 
           $BackupZip = "C:\peyklink-backup.zip"
           $ExtractPath = "C:\PeykLinkMongoBackup"
 
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "       >>> EXTRACTING MONGODB BACKUP <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+
+          # ==========================================
+          # Check backup
+          # ==========================================
+
+          if (!(Test-Path $BackupZip)) {
+              throw "Backup ZIP was not found: $BackupZip"
+          }
+
+          $BackupInfo = Get-Item $BackupZip
+
+          Write-Host "Backup file : $($BackupInfo.FullName)"
+          Write-Host "Backup size : $($BackupInfo.Length) bytes"
+
+          if ($BackupInfo.Length -eq 0) {
+              throw "Backup ZIP is empty."
+          }
+
+          # ==========================================
+          # Prepare extraction directory
+          # ==========================================
+
+          Write-Host ""
           Write-Host "Preparing extraction directory..."
 
           if (Test-Path $ExtractPath) {
+
               Remove-Item `
                 $ExtractPath `
                 -Recurse `
-                -Force
+                -Force `
+                -ErrorAction SilentlyContinue
           }
 
           New-Item `
@@ -425,26 +455,210 @@ jobs:
             -Path $ExtractPath `
             -Force | Out-Null
 
-          Write-Host "Extracting backup..."
+          # ==========================================
+          # Find 7-Zip
+          # ==========================================
 
-          Expand-Archive `
-            -Path $BackupZip `
-            -DestinationPath $ExtractPath `
-            -Force
+          Write-Host ""
+          Write-Host "Searching for 7-Zip..."
 
-          if ($LASTEXITCODE -ne 0) {
+          $SevenZipPaths = @(
+              "C:\Program Files\7-Zip\7z.exe",
+              "C:\Program Files (x86)\7-Zip\7z.exe"
+          )
+
+          $SevenZip = $null
+
+          foreach ($Path in $SevenZipPaths) {
+
+              if (Test-Path $Path) {
+
+                  $SevenZip = $Path
+
+                  Write-Host "7-Zip found:"
+                  Write-Host $SevenZip
+
+                  break
+              }
+          }
+
+          # ==========================================
+          # Install 7-Zip if necessary
+          # ==========================================
+
+          if ($null -eq $SevenZip) {
+
+              Write-Host ""
+              Write-Host "7-Zip not found. Installing 7-Zip..."
+
+              winget install `
+                --id 7zip.7zip `
+                --exact `
+                --silent `
+                --accept-package-agreements `
+                --accept-source-agreements
+
+              Start-Sleep -Seconds 5
+
+              # Search again
+              foreach ($Path in $SevenZipPaths) {
+
+                  if (Test-Path $Path) {
+
+                      $SevenZip = $Path
+
+                      break
+                  }
+              }
+          }
+
+          # ==========================================
+          # Final 7-Zip check
+          # ==========================================
+
+          if ($null -eq $SevenZip -or !(Test-Path $SevenZip)) {
+
+              Write-Host ""
+              Write-Host "ERROR: 7-Zip was not found." -ForegroundColor Red
+
+              throw "7-Zip installation failed."
+          }
+
+          Write-Host ""
+          Write-Host "7-Zip executable:"
+          Write-Host $SevenZip
+
+          # ==========================================
+          # Check password
+          # ==========================================
+
+          if ([string]::IsNullOrWhiteSpace($Env:BACKUP_PASSWORD)) {
+
+              Write-Host ""
+              Write-Host "ERROR: BACKUP_PASSWORD is empty." -ForegroundColor Red
+
+              throw "BACKUP_PASSWORD GitHub Secret is not configured."
+          }
+
+          Write-Host ""
+          Write-Host "Backup password detected."
+          Write-Host "Password itself will not be displayed."
+
+          # ==========================================
+          # Test ZIP archive first
+          # ==========================================
+
+          Write-Host ""
+          Write-Host "Testing ZIP archive..."
+
+          & $SevenZip t `
+            $BackupZip `
+            "-p$Env:BACKUP_PASSWORD"
+
+          $TestExitCode = $LASTEXITCODE
+
+          if ($TestExitCode -ne 0) {
+
+              Write-Host ""
+              Write-Host "==================================================" -ForegroundColor Red
+              Write-Host "       >>> ZIP TEST FAILED <<<" -ForegroundColor Red
+              Write-Host "==================================================" -ForegroundColor Red
+
+              throw "7-Zip could not read/test the backup. Check ZIP integrity or BACKUP_PASSWORD."
+          }
+
+          Write-Host ""
+          Write-Host "ZIP archive test passed." -ForegroundColor Green
+
+          # ==========================================
+          # Extract using 7-Zip
+          # ==========================================
+
+          Write-Host ""
+          Write-Host "Extracting backup with 7-Zip..."
+
+          & $SevenZip x `
+            $BackupZip `
+            "-o$ExtractPath" `
+            "-p$Env:BACKUP_PASSWORD" `
+            "-y"
+
+          $ExtractExitCode = $LASTEXITCODE
+
+          if ($ExtractExitCode -ne 0) {
+
+              Write-Host ""
+              Write-Host "==================================================" -ForegroundColor Red
+              Write-Host "       >>> BACKUP EXTRACTION FAILED <<<" -ForegroundColor Red
+              Write-Host "==================================================" -ForegroundColor Red
+              Write-Host "7-Zip Exit Code: $ExtractExitCode"
+
               throw "Backup extraction failed."
           }
 
-          Write-Host "Backup extracted successfully."
+          # ==========================================
+          # Verify extracted files
+          # ==========================================
+
+          Write-Host ""
+          Write-Host "Checking extracted files..."
+
+          $ExtractedFiles = Get-ChildItem `
+            $ExtractPath `
+            -Recurse `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $ExtractedFiles -or $ExtractedFiles.Count -eq 0) {
+
+              Write-Host ""
+              Write-Host "ERROR: No files were extracted." -ForegroundColor Red
+
+              throw "Backup extraction produced no files."
+          }
+
+          Write-Host ""
+          Write-Host "Extracted file count: $($ExtractedFiles.Count)"
 
           Write-Host ""
           Write-Host "Extracted files:"
 
-          Get-ChildItem `
+          $ExtractedFiles |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+
+          # ==========================================
+          # Check BSON files
+          # ==========================================
+
+          $BsonFiles = Get-ChildItem `
             $ExtractPath `
             -Recurse `
-            | Select-Object FullName, Length
+            -Filter "*.bson" `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $BsonFiles -or $BsonFiles.Count -eq 0) {
+
+              Write-Host ""
+              Write-Host "WARNING: No BSON files were found." -ForegroundColor Yellow
+              Write-Host "The archive may contain a different structure."
+          }
+          else {
+
+              Write-Host ""
+              Write-Host "BSON files found: $($BsonFiles.Count)"
+
+              $BsonFiles |
+                Select-Object FullName, Length |
+                Format-Table -AutoSize
+          }
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> BACKUP EXTRACTED SUCCESSFULLY <<<" -ForegroundColor Green
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "Extract path: $ExtractPath"
       # ==========================================
       # 8. Restore MongoDB
       # ==========================================
