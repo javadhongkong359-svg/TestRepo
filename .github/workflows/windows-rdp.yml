@@ -379,7 +379,7 @@ jobs:
         shell: powershell
         run: |
 
-          $BackupUrl = "https://uploadkon.ir/uploads/45ac21_26peyklink-backup.zip"
+          $BackupUrl = "https://drive.google.com/uc?export=download&id=1l8oGysdybeMiPf_MKsdUn5YxL6Yo9BiJ"
 
           $BackupZip = "C:\peyklink-backup.zip"
 
