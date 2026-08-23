@@ -11,6 +11,15 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 360
 
+    env:
+      FTP_HOST: ${{ secrets.FTP_HOST }}
+      FTP_PORT: ${{ secrets.FTP_PORT }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      FTP_REMOTE_DIRECTORY: ${{ secrets.FTP_REMOTE_DIRECTORY }}
+      FTP_REMOTE_FILE: ${{ secrets.FTP_REMOTE_FILE }}
+      BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+
     steps:
 
       # ==========================================
@@ -373,38 +382,125 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
 
            # ==========================================
-      # 6. Download MongoDB Backup
+      # 6. Download MongoDB Backup from FTP
       # ==========================================
-      - name: 6. Download MongoDB Backup
+      - name: 6. Download MongoDB Backup from FTP
         shell: powershell
         run: |
 
-          $BackupUrl = "https://drive.google.com/uc?export=download&id=1l8oGysdybeMiPf_MKsdUn5YxL6Yo9BiJ"
-
           $BackupZip = "C:\peyklink-backup.zip"
 
-          Write-Host "Downloading MongoDB backup..."
-
-          Invoke-WebRequest `
-            -Uri $BackupUrl `
-            -OutFile $BackupZip
-
-          if (!(Test-Path $BackupZip)) {
-              throw "Backup file was not downloaded."
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST)) {
+              $Env:FTP_HOST = "2193182619.cloudydl.com"
           }
 
-          $Size = (Get-Item $BackupZip).Length
-
-          Write-Host "Backup downloaded."
-          Write-Host "Size: $Size bytes"
-
-          if ($Size -eq 0) {
-              throw "Backup file is empty."
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
+              $Env:FTP_PORT = "21"
           }
-              # ==========================================
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME)) {
+              $Env:FTP_USERNAME = "pz25177"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_PASSWORD)) {
+              $Env:FTP_PASSWORD = "akeCKW4M"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY)) {
+              $Env:FTP_REMOTE_DIRECTORY = "/peyklink"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
+              $Env:FTP_REMOTE_FILE = "peyklink-backup.zip"
+          }
+
+          $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
+
+          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/") {
+              $remoteDir = ""
+          }
+          else {
+              if (-not $remoteDir.StartsWith("/")) {
+                  $remoteDir = "/" + $remoteDir
+              }
+
+              $remoteDir = $remoteDir.TrimEnd("/")
+          }
+
+          $remotePath = "$remoteDir/$($Env:FTP_REMOTE_FILE)"
+          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "       >>> DOWNLOADING BACKUP FROM FTP <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "FTP host : $($Env:FTP_HOST)"
+          Write-Host "FTP path : $remotePath"
+          Write-Host "Local    : $BackupZip"
+
+          if (Test-Path $BackupZip) {
+              Remove-Item $BackupZip -Force
+          }
+
+          $curlCfg = "C:\ftp-curl.conf"
+          "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
+            Set-Content -Path $curlCfg -Encoding ascii
+
+          $curlExit = 1
+
+          try {
+              & curl.exe `
+                --config $curlCfg `
+                --show-error `
+                --fail `
+                --connect-timeout 30 `
+                --retry 3 `
+                --retry-delay 5 `
+                --ftp-pasv `
+                -o $BackupZip `
+                $ftpUri
+
+              $curlExit = $LASTEXITCODE
+          }
+          finally {
+              Remove-Item $curlCfg -Force -ErrorAction SilentlyContinue
+          }
+
+          $hasBackup = $false
+
+          if ($curlExit -eq 0 -and (Test-Path $BackupZip)) {
+              $size = (Get-Item $BackupZip).Length
+
+              Write-Host "Download completed."
+              Write-Host "Size: $size bytes"
+
+              if ($size -gt 0) {
+                  $hasBackup = $true
+              }
+              else {
+                  Write-Host "Downloaded file is empty. Ignoring it." -ForegroundColor Yellow
+                  Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
+              }
+          }
+          else {
+              Write-Host ""
+              Write-Host "No existing backup on FTP (first run or file missing)." -ForegroundColor Yellow
+              Write-Host "Continuing with an empty MongoDB. A full backup will be uploaded at the end."
+
+              if (Test-Path $BackupZip) {
+                  Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
+              }
+          }
+
+          if ($hasBackup) {
+              Add-Content -Path $Env:GITHUB_ENV -Value "BACKUP_FOUND=true"
+              Write-Host "BACKUP_FOUND=true"
+          }
+
+      # ==========================================
       # 7. Extract MongoDB Backup
       # ==========================================
       - name: 7. Extract MongoDB Backup
+        if: env.BACKUP_FOUND == 'true'
         env:
           BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         shell: powershell
@@ -663,6 +759,7 @@ jobs:
       # 8. Restore MongoDB
       # ==========================================
       - name: 8. Restore MongoDB
+        if: env.BACKUP_FOUND == 'true'
         shell: powershell
         run: |
 
@@ -911,11 +1008,15 @@ jobs:
           Write-Host "PID: $($Process.Id)"
 
       # ==========================================
-      # 13. Keep Server Alive - 6 Hours
+      # 13. Keep Server Alive
+      # GitHub kills the job at 360 minutes.
+      # Leave time after this loop for mongodump + zip + FTP upload.
       # ==========================================
       - name: 13. Keep Server Alive
         shell: powershell
         run: |
+
+          $AliveMinutes = 280
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
@@ -926,14 +1027,281 @@ jobs:
           Write-Host "RDP User     : CynetAdmin"
           Write-Host "MongoDB      : 127.0.0.1:27017"
           Write-Host "Application  : PeykLink.Api"
+          Write-Host "Alive for    : $AliveMinutes minutes"
+          Write-Host "Then         : full Mongo dump, zip, FTP upload"
           Write-Host ""
 
-          for ($i = 1; $i -le 360; $i++) {
+          for ($i = 1; $i -le $AliveMinutes; $i++) {
 
               Start-Sleep -Seconds 60
 
-              Write-Host "[$i/360] Server running..."
+              Write-Host "[$i/$AliveMinutes] Server running..."
           }
 
           Write-Host ""
-          Write-Host "6 hours completed."
+          Write-Host "Keep-alive finished. Starting FTP backup..."
+
+      # ==========================================
+      # 14. Dump MongoDB, zip with password, upload to FTP
+      # ==========================================
+      - name: 14. Backup MongoDB and Upload to FTP
+        if: always()
+        shell: powershell
+        run: |
+
+          $BackupZip = "C:\peyklink-backup.zip"
+          $DumpOut = "C:\PeykLinkMongoDump"
+
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "       >>> FULL MONGODB BACKUP TO FTP <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST)) {
+              $Env:FTP_HOST = "2193182619.cloudydl.com"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
+              $Env:FTP_PORT = "21"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME)) {
+              $Env:FTP_USERNAME = "pz25177"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_PASSWORD)) {
+              $Env:FTP_PASSWORD = "akeCKW4M"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY)) {
+              $Env:FTP_REMOTE_DIRECTORY = "/peyklink"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
+              $Env:FTP_REMOTE_FILE = "peyklink-backup.zip"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($Env:BACKUP_PASSWORD)) {
+              throw "BACKUP_PASSWORD GitHub Secret is not configured."
+          }
+
+          $mongoReady = $false
+
+          try {
+              $connection = Test-NetConnection `
+                -ComputerName "127.0.0.1" `
+                -Port 27017 `
+                -WarningAction SilentlyContinue
+
+              $mongoReady = $connection.TcpTestSucceeded
+          }
+          catch {
+              $mongoReady = $false
+          }
+
+          if (-not $mongoReady) {
+              throw "MongoDB is not listening on 127.0.0.1:27017. Cannot create backup."
+          }
+
+          $mongoDump = $null
+          $searchRoots = @(
+              "C:\MongoDBTools",
+              "C:\Program Files\MongoDB",
+              "C:\Program Files (x86)\MongoDB"
+          )
+
+          foreach ($root in $searchRoots) {
+              if (Test-Path $root) {
+                  $found = Get-ChildItem `
+                    -Path $root `
+                    -Recurse `
+                    -Filter "mongodump.exe" `
+                    -File `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+
+                  if ($null -ne $found) {
+                      $mongoDump = $found.FullName
+                      break
+                  }
+              }
+          }
+
+          if ($null -eq $mongoDump) {
+              Write-Host "Downloading MongoDB Database Tools..."
+
+              $toolsZip = "C:\mongodb-tools-backup.zip"
+              $toolsExtract = "C:\MongoDBTools"
+
+              Invoke-WebRequest `
+                "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-windows-x86_64-100.16.1.zip" `
+                -OutFile $toolsZip
+
+              if (Test-Path $toolsExtract) {
+                  Remove-Item $toolsExtract -Recurse -Force
+              }
+
+              Expand-Archive `
+                -Path $toolsZip `
+                -DestinationPath $toolsExtract `
+                -Force
+
+              $mongoDump = Get-ChildItem `
+                $toolsExtract `
+                -Recurse `
+                -Filter "mongodump.exe" `
+                -File |
+                Select-Object -First 1 |
+                Select-Object -ExpandProperty FullName
+          }
+
+          if ($null -eq $mongoDump -or !(Test-Path $mongoDump)) {
+              throw "mongodump.exe was not found."
+          }
+
+          Write-Host "mongodump: $mongoDump"
+
+          if (Test-Path $DumpOut) {
+              Remove-Item $DumpOut -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $DumpOut -Force | Out-Null
+
+          Write-Host "Running full mongodump..."
+
+          & $mongoDump `
+            --host "127.0.0.1:27017" `
+            --out $DumpOut
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "mongodump failed."
+          }
+
+          $bsonFiles = Get-ChildItem `
+            $DumpOut `
+            -Recurse `
+            -Filter "*.bson" `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $bsonFiles -or $bsonFiles.Count -eq 0) {
+              throw "mongodump produced no BSON files."
+          }
+
+          Write-Host "BSON files dumped: $($bsonFiles.Count)"
+
+          $sevenZipPaths = @(
+              "C:\Program Files\7-Zip\7z.exe",
+              "C:\Program Files (x86)\7-Zip\7z.exe"
+          )
+
+          $sevenZip = $null
+
+          foreach ($path in $sevenZipPaths) {
+              if (Test-Path $path) {
+                  $sevenZip = $path
+                  break
+              }
+          }
+
+          if ($null -eq $sevenZip) {
+              Write-Host "Installing 7-Zip..."
+
+              winget install `
+                --id 7zip.7zip `
+                --exact `
+                --silent `
+                --accept-package-agreements `
+                --accept-source-agreements
+
+              Start-Sleep -Seconds 5
+
+              foreach ($path in $sevenZipPaths) {
+                  if (Test-Path $path) {
+                      $sevenZip = $path
+                      break
+                  }
+              }
+          }
+
+          if ($null -eq $sevenZip -or !(Test-Path $sevenZip)) {
+              throw "7-Zip was not found."
+          }
+
+          if (Test-Path $BackupZip) {
+              Remove-Item $BackupZip -Force
+          }
+
+          Write-Host "Creating password-protected ZIP..."
+
+          & $sevenZip a `
+            -tzip `
+            -mx=9 `
+            "-p$Env:BACKUP_PASSWORD" `
+            -mem=AES256 `
+            $BackupZip `
+            "$DumpOut\*"
+
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $BackupZip)) {
+              throw "7-Zip failed to create the backup archive."
+          }
+
+          $zipSize = (Get-Item $BackupZip).Length
+
+          if ($zipSize -eq 0) {
+              throw "Backup ZIP is empty."
+          }
+
+          Write-Host "ZIP created. Size: $zipSize bytes"
+
+          $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
+
+          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/") {
+              $remoteDir = ""
+          }
+          else {
+              if (-not $remoteDir.StartsWith("/")) {
+                  $remoteDir = "/" + $remoteDir
+              }
+
+              $remoteDir = $remoteDir.TrimEnd("/")
+          }
+
+          $remotePath = "$remoteDir/$($Env:FTP_REMOTE_FILE)"
+          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+
+          Write-Host "Uploading to FTP path: $remotePath"
+          Write-Host "Same filename will be overwritten for the next restore."
+
+          $curlCfg = "C:\ftp-curl-upload.conf"
+          "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
+            Set-Content -Path $curlCfg -Encoding ascii
+
+          try {
+              & curl.exe `
+                --config $curlCfg `
+                --show-error `
+                --fail `
+                --connect-timeout 30 `
+                --retry 3 `
+                --retry-delay 5 `
+                --ftp-pasv `
+                --ftp-create-dirs `
+                -T $BackupZip `
+                $ftpUri
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "FTP upload failed."
+              }
+          }
+          finally {
+              Remove-Item $curlCfg -Force -ErrorAction SilentlyContinue
+          }
+
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "       >>> BACKUP UPLOADED TO FTP <<<" -ForegroundColor Green
+          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "Host : $($Env:FTP_HOST)"
+          Write-Host "Path : $remotePath"
+          Write-Host "Size : $zipSize bytes"
+          Write-Host "==================================================" -ForegroundColor Green
