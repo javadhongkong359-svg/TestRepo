@@ -16,9 +16,9 @@ jobs:
       FTP_PORT: ${{ secrets.FTP_PORT }}
       FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
       FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-      # Same path as the bot AppSettings (Backup.Ftp.RemoteDirectory + RemoteFileName).
-      # Do not take these from secrets: "/" was treated as FTP root and missed /peyklink.
-      FTP_REMOTE_DIRECTORY: /peyklink
+      # DirectAdmin File Manager: /domains/pz25177.parspack.net/public_html/peyklink
+      # Not /peyklink — that is a different folder at FTP home root.
+      FTP_REMOTE_DIRECTORY: /domains/pz25177.parspack.net/public_html/peyklink
       FTP_REMOTE_FILE: peyklink-backup.zip
       BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -592,7 +592,7 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY)) {
-              $Env:FTP_REMOTE_DIRECTORY = "/peyklink"
+              $Env:FTP_REMOTE_DIRECTORY = "/domains/pz25177.parspack.net/public_html/peyklink"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
@@ -601,8 +601,8 @@ jobs:
 
           $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
 
-          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/") {
-              $remoteDir = "/peyklink"
+          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink") {
+              $remoteDir = "/domains/pz25177.parspack.net/public_html/peyklink"
           }
           else {
               if (-not $remoteDir.StartsWith("/")) {
@@ -617,7 +617,7 @@ jobs:
               $remoteFile = "peyklink-backup.zip"
           }
 
-          # Bot FluentFTP path is /peyklink/peyklink-backup.zip relative to the FTP home.
+          # Same File Manager folder the bot uploads to (domain public_html, not FTP-home /peyklink).
           # %2F (server-root) 550s on this host; home-relative URL matches the bot.
           $remotePath = "$remoteDir/$remoteFile"
           $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
@@ -1444,7 +1444,7 @@ jobs:
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY)) {
-              $Env:FTP_REMOTE_DIRECTORY = "/peyklink"
+              $Env:FTP_REMOTE_DIRECTORY = "/domains/pz25177.parspack.net/public_html/peyklink"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
@@ -1630,8 +1630,8 @@ jobs:
 
           $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
 
-          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/") {
-              $remoteDir = "/peyklink"
+          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink") {
+              $remoteDir = "/domains/pz25177.parspack.net/public_html/peyklink"
           }
           else {
               if (-not $remoteDir.StartsWith("/")) {
@@ -1646,7 +1646,7 @@ jobs:
               $remoteFile = "peyklink-backup.zip"
           }
 
-          # Same path the bot uploads: /peyklink/peyklink-backup.zip from FTP home.
+          # Same File Manager folder the bot uploads to (domain public_html, not FTP-home /peyklink).
           $remotePath = "$remoteDir/$remoteFile"
           $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
           $ftpUriAbsolute = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/%2F$($remotePath.TrimStart('/'))"
