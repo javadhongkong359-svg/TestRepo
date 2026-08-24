@@ -617,17 +617,18 @@ jobs:
               $remoteFile = "peyklink-backup.zip"
           }
 
-          # Same absolute path FluentFTP uses: /peyklink/peyklink-backup.zip
+          # Bot FluentFTP path is /peyklink/peyklink-backup.zip relative to the FTP home.
+          # %2F (server-root) 550s on this host; home-relative URL matches the bot.
           $remotePath = "$remoteDir/$remoteFile"
-          $ftpPathEncoded = "%2F" + $remotePath.TrimStart("/")
-          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/$ftpPathEncoded"
+          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+          $ftpUriAbsolute = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/%2F$($remotePath.TrimStart('/'))"
 
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host "       >>> DOWNLOADING BACKUP FROM FTP <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host "FTP host : $($Env:FTP_HOST)"
           Write-Host "FTP path : $remotePath"
-          Write-Host "FTP URI  : ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+          Write-Host "FTP URI  : $ftpUri"
           Write-Host "Local    : $BackupZip"
           Write-Host "Must match bot upload path Backup.Ftp.RemoteDirectory/RemoteFileName"
 
@@ -639,22 +640,35 @@ jobs:
           "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
             Set-Content -Path $curlCfg -Encoding ascii
 
-          $curlExit = 1
-
-          try {
+          function Invoke-FtpCurl([string]$Uri, [string]$OutFile) {
+              $prev = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
               & curl.exe `
                 --config $curlCfg `
                 --show-error `
                 --fail `
                 --connect-timeout 30 `
-                --retry 3 `
-                --retry-delay 5 `
                 --ftp-pasv `
-                --ftp-method nocwd `
-                -o $BackupZip `
-                $ftpUri
+                -o $OutFile `
+                $Uri
+              $code = $LASTEXITCODE
+              $ErrorActionPreference = $prev
+              return $code
+          }
 
-              $curlExit = $LASTEXITCODE
+          $curlExit = 1
+
+          try {
+              Write-Host "Trying home-relative FTP path..."
+              $curlExit = Invoke-FtpCurl $ftpUri $BackupZip
+
+              if ($curlExit -ne 0) {
+                  Write-Host "Home-relative download failed (curl $curlExit). Trying server-root path..." -ForegroundColor Yellow
+                  if (Test-Path $BackupZip) {
+                      Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
+                  }
+                  $curlExit = Invoke-FtpCurl $ftpUriAbsolute $BackupZip
+              }
           }
           finally {
               Remove-Item $curlCfg -Force -ErrorAction SilentlyContinue
@@ -690,6 +704,9 @@ jobs:
               Add-Content -Path $Env:GITHUB_ENV -Value "BACKUP_FOUND=true"
               Write-Host "BACKUP_FOUND=true"
           }
+
+          # curl 78 must not fail the job: missing backup is a first-run case.
+          exit 0
 
       # ==========================================
       # 7. Extract MongoDB Backup
@@ -1629,10 +1646,10 @@ jobs:
               $remoteFile = "peyklink-backup.zip"
           }
 
-          # Same absolute path the bot uploads to: /peyklink/peyklink-backup.zip
+          # Same path the bot uploads: /peyklink/peyklink-backup.zip from FTP home.
           $remotePath = "$remoteDir/$remoteFile"
-          $ftpPathEncoded = "%2F" + $remotePath.TrimStart("/")
-          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/$ftpPathEncoded"
+          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+          $ftpUriAbsolute = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/%2F$($remotePath.TrimStart('/'))"
 
           Write-Host "Uploading to FTP path: $remotePath"
           Write-Host "Same path as bot Backup.Ftp.RemoteDirectory/RemoteFileName"
@@ -1642,7 +1659,9 @@ jobs:
           "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
             Set-Content -Path $curlCfg -Encoding ascii
 
-          try {
+          function Invoke-FtpUpload([string]$Uri) {
+              $prev = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
               & curl.exe `
                 --config $curlCfg `
                 --show-error `
@@ -1651,12 +1670,22 @@ jobs:
                 --retry 3 `
                 --retry-delay 5 `
                 --ftp-pasv `
-                --ftp-method nocwd `
                 --ftp-create-dirs `
                 -T $BackupZip `
-                $ftpUri
+                $Uri
+              $code = $LASTEXITCODE
+              $ErrorActionPreference = $prev
+              return $code
+          }
 
-              if ($LASTEXITCODE -ne 0) {
+          try {
+              $uploadExit = Invoke-FtpUpload $ftpUri
+              if ($uploadExit -ne 0) {
+                  Write-Host "Home-relative upload failed (curl $uploadExit). Trying server-root path..." -ForegroundColor Yellow
+                  $uploadExit = Invoke-FtpUpload $ftpUriAbsolute
+              }
+
+              if ($uploadExit -ne 0) {
                   throw "FTP upload failed."
               }
           }
