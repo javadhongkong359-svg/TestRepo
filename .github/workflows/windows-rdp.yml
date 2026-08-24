@@ -26,6 +26,7 @@ jobs:
 
       # ==========================================
       # 0. Prepare Telegram notifier (shared helper)
+      # ASCII-only script: Windows PowerShell breaks on emoji/UTF-8 in GHA temp .ps1
       # ==========================================
       - name: 0. Prepare Telegram notifier
         shell: powershell
@@ -36,6 +37,11 @@ jobs:
             '    $tz = [TimeZoneInfo]::FindSystemTimeZoneById("Iran Standard Time")'
             '    $tehran = [TimeZoneInfo]::ConvertTimeFromUtc((Get-Date).ToUniversalTime(), $tz)'
             '    return $tehran.ToString("yyyy-MM-dd HH:mm:ss")'
+            '}'
+            'function Get-GitHubRunInfo {'
+            '    $runId = $Env:GITHUB_RUN_ID'
+            '    $runUrl = "$($Env:GITHUB_SERVER_URL)/$($Env:GITHUB_REPOSITORY)/actions/runs/$runId"'
+            '    return @{ RunId = $runId; RunUrl = $runUrl }'
             '}'
             'function Send-TelegramNotify {'
             '    param([Parameter(Mandatory = $true)][string]$Text)'
@@ -52,18 +58,164 @@ jobs:
             '        Write-Host "Telegram notification failed: $($_.Exception.Message)" -ForegroundColor Yellow'
             '    }'
             '}'
-            'function Get-GitHubRunInfo {'
-            '    $runId = $Env:GITHUB_RUN_ID'
-            '    $runUrl = "$($Env:GITHUB_SERVER_URL)/$($Env:GITHUB_REPOSITORY)/actions/runs/$runId"'
-            '    return @{ RunId = $runId; RunUrl = $runUrl }'
+            'function Format-RunLink {'
+            '    $run = Get-GitHubRunInfo'
+            '    return ("Run: <a href=""{0}"">#{1}</a>" -f $run.RunUrl, $run.RunId)'
+            '}'
+            'function Notify-ServerReady {'
+            '    param([string]$TailscaleIp)'
+            '    $stamp = Get-TehranStamp'
+            '    $msg = @('
+            '        "<b>PeykLink Server</b>",'
+            '        "Status: <b>SERVER STARTED (RDP Ready)</b>",'
+            '        "",'
+            '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        ("Tailscale IP: <code>{0}</code>" -f $TailscaleIp),'
+            '        "User: <code>CynetAdmin</code>",'
+            '        "Hostname: <code>github-rdp-server</code>",'
+            '        (Format-RunLink),'
+            '        "",'
+            '        "Preparing MongoDB and application..."'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-AppStarted {'
+            '    param([int]$ProcessId)'
+            '    $stamp = Get-TehranStamp'
+            '    $msg = @('
+            '        "<b>PeykLink Server</b>",'
+            '        "Status: <b>APPLICATION STARTED</b>",'
+            '        "",'
+            '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        "Process: <code>PeykLink.Api</code>",'
+            '        ("PID: <code>{0}</code>" -f $ProcessId),'
+            '        "MongoDB: <code>127.0.0.1:27017</code>",'
+            '        (Format-RunLink)'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-ServerRunning {'
+            '    param([int]$AliveMinutes)'
+            '    $stamp = Get-TehranStamp'
+            '    $msg = @('
+            '        "<b>PeykLink Server</b>",'
+            '        "Status: <b>SERVER IS RUNNING</b>",'
+            '        "",'
+            '        ("Start time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        ("Keep-alive: <code>{0}</code> minutes" -f $AliveMinutes),'
+            '        "RDP: <code>CynetAdmin</code>",'
+            '        "MongoDB: <code>127.0.0.1:27017</code>",'
+            '        "App: <code>PeykLink.Api</code>",'
+            '        (Format-RunLink),'
+            '        "",'
+            '        "After this period, backup starts and server shuts down."'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-ServerShuttingDown {'
+            '    param([int]$AliveMinutes)'
+            '    $stamp = Get-TehranStamp'
+            '    $msg = @('
+            '        "<b>PeykLink Server</b>",'
+            '        "Status: <b>SERVER SHUTTING DOWN</b>",'
+            '        "",'
+            '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        ("Keep-alive finished (<code>{0}</code> minutes)" -f $AliveMinutes),'
+            '        "Next: MongoDB backup + FTP upload",'
+            '        (Format-RunLink)'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-BackupStarted {'
+            '    $stamp = Get-TehranStamp'
+            '    $msg = @('
+            '        "<b>PeykLink Backup</b>",'
+            '        "Status: <b>BACKUP IN PROGRESS</b>",'
+            '        "",'
+            '        ("Start time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        "Runner: GitHub Actions (Windows)",'
+            '        "Target file: <code>peyklink-backup.zip</code>",'
+            '        (Format-RunLink),'
+            '        "",'
+            '        "Please wait until backup finishes..."'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-BackupSucceeded {'
+            '    param('
+            '        [string]$DurationText,'
+            '        [string]$SizeText,'
+            '        [long]$ZipBytes,'
+            '        [int]$BsonCount,'
+            '        [string]$FtpHost,'
+            '        [string]$RemotePath'
+            '    )'
+            '    $stamp = Get-TehranStamp'
+            '    $msg = @('
+            '        "<b>PeykLink Backup</b>",'
+            '        "Status: <b>BACKUP READY AND UPLOADED</b>",'
+            '        "",'
+            '        ("Finished: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        ("Duration: <code>{0}</code>" -f $DurationText),'
+            '        ("Size: <code>{0}</code> ({1} bytes)" -f $SizeText, $ZipBytes),'
+            '        ("BSON files: <code>{0}</code>" -f $BsonCount),'
+            '        ("FTP Host: <code>{0}</code>" -f $FtpHost),'
+            '        ("Path: <code>{0}</code>" -f $RemotePath),'
+            '        (Format-RunLink)'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-BackupFailed {'
+            '    param([string]$ErrorMessage)'
+            '    $stamp = Get-TehranStamp'
+            '    $safe = $ErrorMessage -replace "[<>]", ""'
+            '    $msg = @('
+            '        "<b>PeykLink Backup</b>",'
+            '        "Status: <b>BACKUP FAILED</b>",'
+            '        "",'
+            '        ("Error time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        ("Error: <code>{0}</code>" -f $safe),'
+            '        (Format-RunLink)'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-JobFinished {'
+            '    param([string]$JobStatus)'
+            '    $stamp = Get-TehranStamp'
+            '    $status = ("{0}" -f $JobStatus).Trim().ToLowerInvariant()'
+            '    switch ($status) {'
+            '        "success" {'
+            '            $state = "Status: <b>SUCCESS</b>"'
+            '            $extra = "Server stopped and this run completed successfully."'
+            '        }'
+            '        "cancelled" {'
+            '            $state = "Status: <b>CANCELLED / INTERRUPTED</b>"'
+            '            $extra = "Job may have been cancelled manually or hit timeout."'
+            '        }'
+            '        default {'
+            '            $state = "Status: <b>FAILED</b>"'
+            '            $extra = "Check GitHub Actions logs for error details."'
+            '        }'
+            '    }'
+            '    $msg = @('
+            '        "<b>PeykLink Job</b>",'
+            '        $state,'
+            '        "",'
+            '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        ("Job Status: <code>{0}</code>" -f $JobStatus),'
+            '        (Format-RunLink),'
+            '        "",'
+            '        $extra'
+            '    ) -join "`n"'
+            '    Send-TelegramNotify $msg'
             '}'
           )
 
-          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          $utf8Bom = New-Object System.Text.UTF8Encoding $true
           [System.IO.File]::WriteAllText(
             "C:\PeykLink-TelegramNotify.ps1",
             ($lines -join "`r`n"),
-            $utf8NoBom
+            $utf8Bom
           )
 
           Write-Host "Telegram notifier ready: C:\PeykLink-TelegramNotify.ps1"
@@ -171,21 +323,7 @@ jobs:
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              $run = Get-GitHubRunInfo
-              $stamp = Get-TehranStamp
-              $startMsg = @(
-                "🟢 <b>PeykLink Server</b>",
-                "✅ وضعیت: <b>سرور روشن شد (RDP Ready)</b>",
-                "",
-                "🕐 زمان: <code>$stamp</code> (تهران)",
-                "🌐 Tailscale IP: <code>$ts_ip</code>",
-                "👤 User: <code>CynetAdmin</code>",
-                "🖥 Hostname: <code>github-rdp-server</code>",
-                "🔗 Run: <a href=`"$($run.RunUrl)`">#$($run.RunId)</a>",
-                "",
-                "در حال آماده‌سازی MongoDB و اپلیکیشن..."
-              ) -join "`n"
-              Send-TelegramNotify $startMsg
+              Notify-ServerReady -TailscaleIp "$ts_ip"
           }
       # ==========================================
       # 4. Install MongoDB
@@ -1073,19 +1211,7 @@ jobs:
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              $run = Get-GitHubRunInfo
-              $stamp = Get-TehranStamp
-              $apiMsg = @(
-                "🚀 <b>PeykLink Server</b>",
-                "✅ وضعیت: <b>اپلیکیشن ران شد</b>",
-                "",
-                "🕐 زمان: <code>$stamp</code> (تهران)",
-                "🧩 Process: <code>PeykLink.Api</code>",
-                "🆔 PID: <code>$($Process.Id)</code>",
-                "🗄 MongoDB: <code>127.0.0.1:27017</code>",
-                "🔗 Run: <a href=`"$($run.RunUrl)`">#$($run.RunId)</a>"
-              ) -join "`n"
-              Send-TelegramNotify $apiMsg
+              Notify-AppStarted -ProcessId $Process.Id
           }
       # ==========================================
       # 13. Keep Server Alive
@@ -1113,22 +1239,7 @@ jobs:
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              $run = Get-GitHubRunInfo
-              $stamp = Get-TehranStamp
-              $runningMsg = @(
-                "🟢 <b>PeykLink Server</b>",
-                "▶️ وضعیت: <b>سرور در حال اجراست</b>",
-                "",
-                "🕐 زمان شروع اجرا: <code>$stamp</code> (تهران)",
-                "⏱ مدت زنده ماندن: <code>$AliveMinutes</code> دقیقه",
-                "👤 RDP: <code>CynetAdmin</code>",
-                "🗄 MongoDB: <code>127.0.0.1:27017</code>",
-                "🧩 App: <code>PeykLink.Api</code>",
-                "🔗 Run: <a href=`"$($run.RunUrl)`">#$($run.RunId)</a>",
-                "",
-                "بعد از اتمام این مدت، بکاپ گرفته و سرور خاموش می‌شود."
-              ) -join "`n"
-              Send-TelegramNotify $runningMsg
+              Notify-ServerRunning -AliveMinutes $AliveMinutes
           }
 
           for ($i = 1; $i -le $AliveMinutes; $i++) {
@@ -1150,18 +1261,7 @@ jobs:
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              $run = Get-GitHubRunInfo
-              $stamp = Get-TehranStamp
-              $shutdownMsg = @(
-                "🟠 <b>PeykLink Server</b>",
-                "⏹ وضعیت: <b>سرور در حال خاموش شدن است</b>",
-                "",
-                "🕐 زمان: <code>$stamp</code> (تهران)",
-                "⏱ keep-alive تمام شد (<code>$AliveMinutes</code> دقیقه)",
-                "📦 مرحله بعدی: بکاپ MongoDB و آپلود FTP",
-                "🔗 Run: <a href=`"$($run.RunUrl)`">#$($run.RunId)</a>"
-              ) -join "`n"
-              Send-TelegramNotify $shutdownMsg
+              Notify-ServerShuttingDown -AliveMinutes $AliveMinutes
           }
       # ==========================================
       # 13b. Commit & push telegram-cli-sessions (فعلاً غیرفعال)
@@ -1270,17 +1370,9 @@ jobs:
               . "C:\PeykLink-TelegramNotify.ps1"
           }
           else {
-              function Get-TehranStamp {
-                  return (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss") + " UTC"
-              }
-              function Send-TelegramNotify([string]$Text) {
-                  Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow
-              }
-              function Get-GitHubRunInfo {
-                  $runId = $Env:GITHUB_RUN_ID
-                  $runUrl = "$($Env:GITHUB_SERVER_URL)/$($Env:GITHUB_REPOSITORY)/actions/runs/$runId"
-                  return @{ RunId = $runId; RunUrl = $runUrl }
-              }
+              function Notify-BackupStarted { Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow }
+              function Notify-BackupSucceeded { Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow }
+              function Notify-BackupFailed { Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow }
           }
 
           function Format-ByteSize([long]$Bytes) {
@@ -1294,24 +1386,7 @@ jobs:
           Write-Host "       >>> FULL MONGODB BACKUP TO FTP <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
 
-          $run = Get-GitHubRunInfo
-          $runId = $run.RunId
-          $runUrl = $run.RunUrl
-          $startStamp = Get-TehranStamp
-
-          $startMsg = @(
-            "🛠 <b>PeykLink Backup</b>",
-            "⏳ وضعیت: <b>در حال بکاپ‌گیری</b>",
-            "",
-            "🕐 زمان شروع: <code>$startStamp</code> (تهران)",
-            "🖥 Runner: GitHub Actions (Windows)",
-            "📦 فایل هدف: <code>peyklink-backup.zip</code>",
-            "🔗 Run: <a href=`"$runUrl`">#$runId</a>",
-            "",
-            "لطفاً تا پایان عملیات صبر کنید..."
-          ) -join "`n"
-
-          Send-TelegramNotify $startMsg
+          Notify-BackupStarted
 
           try {
 
@@ -1565,42 +1640,24 @@ jobs:
           Write-Host "Size : $zipSize bytes"
           Write-Host "==================================================" -ForegroundColor Green
 
-          $endStamp = Get-TehranStamp
           $duration = (Get-Date).ToUniversalTime() - $BackupStartedAtUtc
           $durationText = "{0:hh\:mm\:ss}" -f $duration
           $sizeText = Format-ByteSize $zipSize
 
-          $okMsg = @(
-            "✅ <b>PeykLink Backup</b>",
-            "🎉 وضعیت: <b>بکاپ آماده و آپلود شد</b>",
-            "",
-            "🕐 زمان اتمام: <code>$endStamp</code> (تهران)",
-            "⏱ مدت زمان: <code>$durationText</code>",
-            "📦 حجم فایل: <code>$sizeText</code> ($zipSize bytes)",
-            "📁 BSONها: <code>$($bsonFiles.Count)</code>",
-            "📤 FTP Host: <code>$($Env:FTP_HOST)</code>",
-            "📍 مسیر: <code>$remotePath</code>",
-            "🔗 Run: <a href=`"$runUrl`">#$runId</a>"
-          ) -join "`n"
-
-          Send-TelegramNotify $okMsg
+          Notify-BackupSucceeded `
+            -DurationText $durationText `
+            -SizeText $sizeText `
+            -ZipBytes $zipSize `
+            -BsonCount $bsonFiles.Count `
+            -FtpHost $Env:FTP_HOST `
+            -RemotePath $remotePath
 
           }
           catch {
-              $failStamp = Get-TehranStamp
               $errMsg = $_.Exception.Message
               if ([string]::IsNullOrWhiteSpace($errMsg)) { $errMsg = "$_" }
 
-              $failMsg = @(
-                "❌ <b>PeykLink Backup</b>",
-                "⚠️ وضعیت: <b>بکاپ ناموفق بود</b>",
-                "",
-                "🕐 زمان خطا: <code>$failStamp</code> (تهران)",
-                "🧾 خطا: <code>$errMsg</code>",
-                "🔗 Run: <a href=`"$runUrl`">#$runId</a>"
-              ) -join "`n"
-
-              Send-TelegramNotify $failMsg
+              Notify-BackupFailed -ErrorMessage $errMsg
 
               throw
           }
@@ -1621,38 +1678,4 @@ jobs:
           }
 
           . "C:\PeykLink-TelegramNotify.ps1"
-
-          $run = Get-GitHubRunInfo
-          $stamp = Get-TehranStamp
-          $status = "$Env:JOB_STATUS".Trim().ToLowerInvariant()
-
-          switch ($status) {
-              "success" {
-                  $title = "✅ <b>PeykLink Job</b>"
-                  $state = "وضعیت نهایی: <b>موفق تمام شد</b>"
-                  $extra = "سرور خاموش شد و چرخه این Run کامل شد."
-              }
-              "cancelled" {
-                  $title = "🟠 <b>PeykLink Job</b>"
-                  $state = "وضعیت نهایی: <b>لغو شد / قطع شد</b>"
-                  $extra = "ممکن است به‌خاطر Cancel دستی یا Timeout جاب قطع شده باشد."
-              }
-              default {
-                  $title = "❌ <b>PeykLink Job</b>"
-                  $state = "وضعیت نهایی: <b>خطا / ناموفق</b>"
-                  $extra = "برای جزئیات خطا به لاگ GitHub Actions مراجعه کنید."
-              }
-          }
-
-          $finalMsg = @(
-            $title,
-            $state,
-            "",
-            "🕐 زمان: <code>$stamp</code> (تهران)",
-            "📊 Job Status: <code>$Env:JOB_STATUS</code>",
-            "🔗 Run: <a href=`"$($run.RunUrl)`">#$($run.RunId)</a>",
-            "",
-            $extra
-          ) -join "`n"
-
-          Send-TelegramNotify $finalMsg
+          Notify-JobFinished -JobStatus "$Env:JOB_STATUS"
