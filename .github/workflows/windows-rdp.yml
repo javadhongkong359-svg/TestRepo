@@ -436,7 +436,38 @@ jobs:
           Write-Host "Container : $ContainerName"
           Write-Host "Port      : 27017"
 
-          docker rm -f $ContainerName 2>$null | Out-Null
+          # GHA PowerShell uses ErrorActionPreference=Stop.
+          # docker rm/inspect write to stderr when the container is missing,
+          # and 2>$null still becomes a terminating NativeCommandError.
+          function Remove-DockerContainerIfExists([string]$Name) {
+              $prev = $ErrorActionPreference
+              $ErrorActionPreference = 'SilentlyContinue'
+              $names = @(docker ps -a --format "{{.Names}}")
+              $ErrorActionPreference = $prev
+
+              if ($names -notcontains $Name) {
+                  return
+              }
+
+              Write-Host "Removing existing container $Name..."
+              $ErrorActionPreference = 'SilentlyContinue'
+              docker rm -f $Name | Out-Null
+              $rmExit = $LASTEXITCODE
+              $ErrorActionPreference = $prev
+              if ($rmExit -ne 0) {
+                  throw "Could not remove existing container $Name"
+              }
+          }
+
+          function Get-DockerContainerRunning([string]$Name) {
+              $prev = $ErrorActionPreference
+              $ErrorActionPreference = 'SilentlyContinue'
+              $value = docker inspect --format "{{.State.Running}}" $Name
+              $ErrorActionPreference = $prev
+              return ("{0}" -f $value).Trim()
+          }
+
+          Remove-DockerContainerIfExists $ContainerName
 
           docker run -d `
             --name $ContainerName `
@@ -449,7 +480,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               Write-Host "docker run with process isolation failed. Retrying without --isolation..." -ForegroundColor Yellow
 
-              docker rm -f $ContainerName 2>$null | Out-Null
+              Remove-DockerContainerIfExists $ContainerName
 
               docker run -d `
                 --name $ContainerName `
@@ -472,7 +503,7 @@ jobs:
 
               Start-Sleep -Seconds 2
 
-              $running = (docker inspect -f "{{.State.Running}}" $ContainerName 2>$null)
+              $running = Get-DockerContainerRunning $ContainerName
               if ($running -ne "true") {
                   Write-Host ""
                   Write-Host "MongoDB container is not running." -ForegroundColor Red
