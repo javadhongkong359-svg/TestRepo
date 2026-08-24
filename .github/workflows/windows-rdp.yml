@@ -16,8 +16,10 @@ jobs:
       FTP_PORT: ${{ secrets.FTP_PORT }}
       FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
       FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-      FTP_REMOTE_DIRECTORY: ${{ secrets.FTP_REMOTE_DIRECTORY }}
-      FTP_REMOTE_FILE: ${{ secrets.FTP_REMOTE_FILE }}
+      # Same path as the bot AppSettings (Backup.Ftp.RemoteDirectory + RemoteFileName).
+      # Do not take these from secrets: "/" was treated as FTP root and missed /peyklink.
+      FTP_REMOTE_DIRECTORY: /peyklink
+      FTP_REMOTE_FILE: peyklink-backup.zip
       BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
@@ -367,264 +369,158 @@ jobs:
               Notify-ServerReady -TailscaleIp "$ts_ip"
           }
       # ==========================================
-      # 4. Install MongoDB
+      # 4. Pull MongoDB Windows Docker image
+      # GitHub windows-latest has Docker, but only Windows containers.
+      # Official mongo Linux images will not run here.
       # ==========================================
-      - name: 4. Install MongoDB
+      - name: 4. Pull MongoDB Docker image
         shell: powershell
         run: |
 
           $MongoVersion = "8.0.28"
 
-          $MongoUrl = `
-            "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$MongoVersion-signed.msi"
+          Write-Host "Checking Docker..."
 
-          $MongoMsi = "C:\mongodb.msi"
-
-          Write-Host "Downloading MongoDB $MongoVersion..."
-
-          Invoke-WebRequest `
-            -Uri $MongoUrl `
-            -OutFile $MongoMsi
-
-          if (!(Test-Path $MongoMsi)) {
-              throw "MongoDB MSI download failed."
+          docker version
+          if ($LASTEXITCODE -ne 0) {
+              throw "Docker is not available on this Windows runner."
           }
 
-          Write-Host "Installing MongoDB..."
+          $osType = (docker info --format "{{.OSType}}").Trim()
+          Write-Host "Docker OSType: $osType"
 
-          Start-Process `
-            msiexec.exe `
-            -ArgumentList "/i `"$MongoMsi`" /qn /norestart" `
-            -Wait
-
-          Start-Sleep -Seconds 10
-
-          Write-Host "Checking MongoDB service..."
-
-          $MongoService = Get-Service `
-            -Name "MongoDB" `
-            -ErrorAction SilentlyContinue
-
-          if ($null -eq $MongoService) {
-              throw "MongoDB service was not found."
+          if ($osType -ne "windows") {
+              throw "Windows containers are required. Docker OSType is '$osType'."
           }
 
-          Write-Host "MongoDB service found."
+          $osBuild = [Environment]::OSVersion.Version.Build
+          if ($osBuild -ge 26100) {
+              $MongoImage = "mongo:${MongoVersion}-windowsservercore-ltsc2025"
+          }
+          else {
+              $MongoImage = "mongo:${MongoVersion}-windowsservercore-ltsc2022"
+          }
 
-           # ==========================================
-      # 5. Start MongoDB Directly
+          Write-Host "OS build    : $osBuild"
+          Write-Host "Mongo image : $MongoImage"
+
+          Add-Content -Path $Env:GITHUB_ENV -Value "MONGO_DOCKER_IMAGE=$MongoImage"
+
+          Write-Host "Pulling MongoDB image..."
+          docker pull $MongoImage
+          if ($LASTEXITCODE -ne 0) {
+              throw "docker pull failed for $MongoImage"
+          }
+
+          Write-Host "MongoDB image ready."
+
       # ==========================================
-      - name: 5. Start MongoDB
+      # 5. Start MongoDB container
+      # App / mongorestore / mongodump still use 127.0.0.1:27017
+      # ==========================================
+      - name: 5. Start MongoDB container
         shell: powershell
         run: |
 
-          Write-Host "Preparing MongoDB data directory..."
+          $MongoImage = $Env:MONGO_DOCKER_IMAGE
+          $ContainerName = "peyklink-mongo"
 
-          $MongoData = "C:\MongoDB\data\db"
-
-          if (Test-Path "C:\MongoDB") {
-
-              Write-Host "Removing old MongoDB directory..."
-
-              Remove-Item `
-                "C:\MongoDB" `
-                -Recurse `
-                -Force
+          if ([string]::IsNullOrWhiteSpace($MongoImage)) {
+              throw "MONGO_DOCKER_IMAGE was not set by the previous step."
           }
 
-          New-Item `
-            -ItemType Directory `
-            -Path $MongoData `
-            -Force | Out-Null
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "       >>> STARTING MONGODB CONTAINER <<<" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "Image     : $MongoImage"
+          Write-Host "Container : $ContainerName"
+          Write-Host "Port      : 27017"
 
-          Write-Host "Searching for mongod.exe..."
+          docker rm -f $ContainerName 2>$null | Out-Null
 
-          # ==========================================
-          # Find mongod.exe automatically
-          # ==========================================
+          docker run -d `
+            --name $ContainerName `
+            --isolation=process `
+            --restart unless-stopped `
+            -p 27017:27017 `
+            $MongoImage `
+            --bind_ip_all
 
-          $MongoExe = $null
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "docker run with process isolation failed. Retrying without --isolation..." -ForegroundColor Yellow
 
-          $MongoSearchPaths = @(
-              "C:\Program Files\MongoDB",
-              "C:\Program Files (x86)\MongoDB"
-          )
+              docker rm -f $ContainerName 2>$null | Out-Null
 
-          foreach ($SearchPath in $MongoSearchPaths) {
+              docker run -d `
+                --name $ContainerName `
+                --restart unless-stopped `
+                -p 27017:27017 `
+                $MongoImage `
+                --bind_ip_all
 
-              if (Test-Path $SearchPath) {
-
-                  Write-Host "Searching in: $SearchPath"
-
-                  $FoundMongo = Get-ChildItem `
-                    -Path $SearchPath `
-                    -Recurse `
-                    -Filter "mongod.exe" `
-                    -File `
-                    -ErrorAction SilentlyContinue `
-                    | Select-Object -First 1
-
-                  if ($null -ne $FoundMongo) {
-
-                      $MongoExe = $FoundMongo.FullName
-
-                      break
-                  }
+              if ($LASTEXITCODE -ne 0) {
+                  throw "docker run failed for $MongoImage"
               }
           }
 
-          # ==========================================
-          # If mongod.exe was not found
-          # ==========================================
-
-          if ($null -eq $MongoExe) {
-
-              Write-Host ""
-              Write-Host "ERROR: mongod.exe was not found." -ForegroundColor Red
-              Write-Host ""
-
-              Write-Host "Checking MongoDB installation directories..."
-
-              if (Test-Path "C:\Program Files\MongoDB") {
-
-                  Get-ChildItem `
-                    "C:\Program Files\MongoDB" `
-                    -Recurse `
-                    -ErrorAction SilentlyContinue `
-                    | Select-Object FullName
-              }
-              else {
-
-                  Write-Host "C:\Program Files\MongoDB does not exist."
-              }
-
-              Write-Host ""
-
-              if (Test-Path "C:\Program Files (x86)\MongoDB") {
-
-                  Write-Host "Checking x86 MongoDB directory..."
-
-                  Get-ChildItem `
-                    "C:\Program Files (x86)\MongoDB" `
-                    -Recurse `
-                    -ErrorAction SilentlyContinue `
-                    | Select-Object FullName
-              }
-
-              throw "mongod.exe was not found on this Windows Runner."
-          }
-
           Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "       >>> MONGODB EXECUTABLE FOUND <<<" -ForegroundColor Cyan
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "MongoDB executable:"
-          Write-Host $MongoExe
-          Write-Host ""
-          Write-Host "Data directory:"
-          Write-Host $MongoData
-          Write-Host ""
-
-          # ==========================================
-          # Start MongoDB
-          # ==========================================
-
-          Write-Host "Starting MongoDB..."
-
-          $MongoProcess = Start-Process `
-            -FilePath $MongoExe `
-            -ArgumentList "--dbpath `"$MongoData`" --bind_ip 127.0.0.1 --port 27017" `
-            -WindowStyle Hidden `
-            -PassThru
-
-          Write-Host "MongoDB PID: $($MongoProcess.Id)"
-
-          # ==========================================
-          # Wait for MongoDB
-          # ==========================================
-
-          Write-Host ""
-          Write-Host "Waiting for MongoDB..."
+          Write-Host "Waiting for MongoDB on port 27017..."
 
           $MongoReady = $false
 
-          for ($i = 1; $i -le 30; $i++) {
+          for ($i = 1; $i -le 60; $i++) {
 
-              Start-Sleep -Seconds 1
+              Start-Sleep -Seconds 2
 
-              # Check if process crashed
-              if ($MongoProcess.HasExited) {
-
+              $running = (docker inspect -f "{{.State.Running}}" $ContainerName 2>$null)
+              if ($running -ne "true") {
                   Write-Host ""
-                  Write-Host "MongoDB process exited unexpectedly." -ForegroundColor Red
-                  Write-Host "Exit code: $($MongoProcess.ExitCode)"
-
-                  throw "MongoDB process stopped unexpectedly."
+                  Write-Host "MongoDB container is not running." -ForegroundColor Red
+                  docker logs $ContainerName
+                  throw "MongoDB container exited before it became ready."
               }
 
               try {
-
                   $Connection = Test-NetConnection `
                     -ComputerName "127.0.0.1" `
                     -Port 27017 `
                     -WarningAction SilentlyContinue
 
                   if ($Connection.TcpTestSucceeded) {
-
                       $MongoReady = $true
-
                       Write-Host ""
                       Write-Host "MongoDB is listening on port 27017." -ForegroundColor Green
-
                       break
                   }
-
               }
               catch {
                   # MongoDB is not ready yet
               }
 
-              Write-Host "Waiting for MongoDB... [$i/30]"
+              Write-Host "Waiting for MongoDB... [$i/60]"
           }
 
-          # ==========================================
-          # MongoDB failed
-          # ==========================================
-
           if (!$MongoReady) {
-
               Write-Host ""
               Write-Host "==================================================" -ForegroundColor Red
               Write-Host "       >>> MONGODB FAILED TO START <<<" -ForegroundColor Red
               Write-Host "==================================================" -ForegroundColor Red
-              Write-Host ""
-
-              if (!$MongoProcess.HasExited) {
-
-                  Stop-Process `
-                    -Id $MongoProcess.Id `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-              }
-
+              docker ps -a --filter "name=$ContainerName"
+              docker logs $ContainerName
               throw "MongoDB did not start on port 27017."
           }
-
-          # ==========================================
-          # MongoDB Ready
-          # ==========================================
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> MONGODB IS RUNNING <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "Address: mongodb://127.0.0.1:27017"
-          Write-Host "PID    : $($MongoProcess.Id)"
-          Write-Host "Data   : $MongoData"
-          Write-Host "Mongo  : $MongoExe"
+          Write-Host "Address   : mongodb://127.0.0.1:27017"
+          Write-Host "Container : $ContainerName"
+          Write-Host "Image     : $MongoImage"
+          docker ps --filter "name=$ContainerName"
           Write-Host "==================================================" -ForegroundColor Green
 
-           # ==========================================
+      # ==========================================
       # 6. Download MongoDB Backup from FTP
       # ==========================================
       - name: 6. Download MongoDB Backup from FTP
@@ -660,7 +556,7 @@ jobs:
           $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
 
           if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/") {
-              $remoteDir = ""
+              $remoteDir = "/peyklink"
           }
           else {
               if (-not $remoteDir.StartsWith("/")) {
@@ -670,15 +566,24 @@ jobs:
               $remoteDir = $remoteDir.TrimEnd("/")
           }
 
-          $remotePath = "$remoteDir/$($Env:FTP_REMOTE_FILE)"
-          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+          $remoteFile = $Env:FTP_REMOTE_FILE.Trim()
+          if ([string]::IsNullOrWhiteSpace($remoteFile)) {
+              $remoteFile = "peyklink-backup.zip"
+          }
+
+          # Same absolute path FluentFTP uses: /peyklink/peyklink-backup.zip
+          $remotePath = "$remoteDir/$remoteFile"
+          $ftpPathEncoded = "%2F" + $remotePath.TrimStart("/")
+          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/$ftpPathEncoded"
 
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host "       >>> DOWNLOADING BACKUP FROM FTP <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host "FTP host : $($Env:FTP_HOST)"
           Write-Host "FTP path : $remotePath"
+          Write-Host "FTP URI  : ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
           Write-Host "Local    : $BackupZip"
+          Write-Host "Must match bot upload path Backup.Ftp.RemoteDirectory/RemoteFileName"
 
           if (Test-Path $BackupZip) {
               Remove-Item $BackupZip -Force
@@ -699,6 +604,7 @@ jobs:
                 --retry 3 `
                 --retry-delay 5 `
                 --ftp-pasv `
+                --ftp-method nocwd `
                 -o $BackupZip `
                 $ftpUri
 
@@ -1125,6 +1031,20 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> MONGODB RESTORE COMPLETED <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
+
+          Write-Host ""
+          Write-Host "Removing local backup files after restore..."
+
+          $BackupZip = "C:\peyklink-backup.zip"
+          if (Test-Path $BackupZip) {
+              Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
+              Write-Host "Deleted backup zip: $BackupZip"
+          }
+
+          if (Test-Path $ExtractPath) {
+              Remove-Item $ExtractPath -Recurse -Force -ErrorAction SilentlyContinue
+              Write-Host "Deleted extracted backup: $ExtractPath"
+          }
 
       # ==========================================
       # 9. Clone PeykLinkbot Repository
@@ -1631,7 +1551,7 @@ jobs:
           $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
 
           if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/") {
-              $remoteDir = ""
+              $remoteDir = "/peyklink"
           }
           else {
               if (-not $remoteDir.StartsWith("/")) {
@@ -1641,10 +1561,18 @@ jobs:
               $remoteDir = $remoteDir.TrimEnd("/")
           }
 
-          $remotePath = "$remoteDir/$($Env:FTP_REMOTE_FILE)"
-          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
+          $remoteFile = $Env:FTP_REMOTE_FILE.Trim()
+          if ([string]::IsNullOrWhiteSpace($remoteFile)) {
+              $remoteFile = "peyklink-backup.zip"
+          }
+
+          # Same absolute path the bot uploads to: /peyklink/peyklink-backup.zip
+          $remotePath = "$remoteDir/$remoteFile"
+          $ftpPathEncoded = "%2F" + $remotePath.TrimStart("/")
+          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/$ftpPathEncoded"
 
           Write-Host "Uploading to FTP path: $remotePath"
+          Write-Host "Same path as bot Backup.Ftp.RemoteDirectory/RemoteFileName"
           Write-Host "Same filename will be overwritten for the next restore."
 
           $curlCfg = "C:\ftp-curl-upload.conf"
@@ -1660,6 +1588,7 @@ jobs:
                 --retry 3 `
                 --retry-delay 5 `
                 --ftp-pasv `
+                --ftp-method nocwd `
                 --ftp-create-dirs `
                 -T $BackupZip `
                 $ftpUri
@@ -1692,6 +1621,14 @@ jobs:
             -BsonCount $bsonFiles.Count `
             -FtpHost $Env:FTP_HOST `
             -RemotePath $remotePath
+
+          Write-Host "Removing local backup files after FTP upload..."
+          if (Test-Path $BackupZip) {
+              Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
+          }
+          if (Test-Path $DumpOut) {
+              Remove-Item $DumpOut -Recurse -Force -ErrorAction SilentlyContinue
+          }
 
           }
           catch {
