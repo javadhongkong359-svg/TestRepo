@@ -551,6 +551,100 @@ jobs:
           docker ps --filter "name=$ContainerName"
           Write-Host "==================================================" -ForegroundColor Green
 
+          $mongoHelper = @(
+            'function Test-PeykLinkMongoPort {'
+            '    param([int]$TimeoutMs = 2000)'
+            '    foreach ($hostName in @("127.0.0.1", "localhost")) {'
+            '        $client = $null'
+            '        try {'
+            '            $client = New-Object System.Net.Sockets.TcpClient'
+            '            $iar = $client.BeginConnect($hostName, 27017, $null, $null)'
+            '            $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)'
+            '            if ($ok) {'
+            '                $client.EndConnect($iar)'
+            '                return $true'
+            '            }'
+            '        } catch { }'
+            '        finally { if ($client) { $client.Close() } }'
+            '    }'
+            '    return $false'
+            '}'
+            'function Get-PeykLinkMongoContainerState {'
+            '    param([string]$Name = "peyklink-mongo")'
+            '    $prev = $ErrorActionPreference'
+            '    $ErrorActionPreference = "SilentlyContinue"'
+            '    $running = docker inspect --format "{{.State.Running}}" $Name'
+            '    $code = $LASTEXITCODE'
+            '    $ErrorActionPreference = $prev'
+            '    if ($code -ne 0) { return "missing" }'
+            '    if (("{0}" -f $running).Trim() -eq "true") { return "running" }'
+            '    return "stopped"'
+            '}'
+            'function Start-PeykLinkMongoContainer {'
+            '    param([string]$Name = "peyklink-mongo")'
+            '    $image = $Env:MONGO_DOCKER_IMAGE'
+            '    if ([string]::IsNullOrWhiteSpace($image)) {'
+            '        $image = "mongo:8.0.28-windowsservercore-ltsc2025"'
+            '    }'
+            '    $state = Get-PeykLinkMongoContainerState $Name'
+            '    Write-Host ("MongoDB container state: {0}" -f $state)'
+            '    if ($state -eq "running") { return }'
+            '    $prev = $ErrorActionPreference'
+            '    $ErrorActionPreference = "SilentlyContinue"'
+            '    if ($state -eq "stopped") {'
+            '        Write-Host "Starting stopped MongoDB container..."'
+            '        docker start $Name | Out-Null'
+            '        $ErrorActionPreference = $prev'
+            '        return'
+            '    }'
+            '    Write-Host ("Creating MongoDB container from {0}..." -f $image)'
+            '    docker run -d --name $Name --isolation=process --restart unless-stopped -p 27017:27017 $image --bind_ip_all | Out-Null'
+            '    if ($LASTEXITCODE -ne 0) {'
+            '        docker run -d --name $Name --restart unless-stopped -p 27017:27017 $image --bind_ip_all | Out-Null'
+            '    }'
+            '    $ErrorActionPreference = $prev'
+            '}'
+            'function Ensure-PeykLinkMongoRunning {'
+            '    param([switch]$ThrowOnFailure)'
+            '    if (Test-PeykLinkMongoPort) {'
+            '        Write-Host "MongoDB is listening on 127.0.0.1:27017."'
+            '        return $true'
+            '    }'
+            '    Write-Host "MongoDB port 27017 is down. Restarting container..." -ForegroundColor Yellow'
+            '    $prev = $ErrorActionPreference'
+            '    $ErrorActionPreference = "SilentlyContinue"'
+            '    docker ps -a --filter "name=peyklink-mongo"'
+            '    docker logs --tail 80 peyklink-mongo'
+            '    $ErrorActionPreference = $prev'
+            '    Start-PeykLinkMongoContainer'
+            '    for ($n = 1; $n -le 60; $n++) {'
+            '        Start-Sleep -Seconds 2'
+            '        if (Test-PeykLinkMongoPort) {'
+            '            Write-Host "MongoDB is listening on 127.0.0.1:27017."'
+            '            return $true'
+            '        }'
+            '        $state = Get-PeykLinkMongoContainerState'
+            '        if ($state -ne "running") { Start-PeykLinkMongoContainer }'
+            '        Write-Host ("Waiting for MongoDB after restart... [{0}/60] state={1}" -f $n, $state)'
+            '    }'
+            '    if ($ThrowOnFailure) {'
+            '        $ErrorActionPreference = "SilentlyContinue"'
+            '        docker ps -a --filter "name=peyklink-mongo"'
+            '        docker logs peyklink-mongo'
+            '        throw "MongoDB is not listening on 127.0.0.1:27017. Cannot create backup."'
+            '    }'
+            '    return $false'
+            '}'
+          )
+
+          $utf8Bom = New-Object System.Text.UTF8Encoding $true
+          [System.IO.File]::WriteAllText(
+            "C:\PeykLink-MongoDocker.ps1",
+            ($mongoHelper -join "`r`n"),
+            $utf8Bom
+          )
+          Write-Host "Mongo helper ready: C:\PeykLink-MongoDocker.ps1"
+
       # ==========================================
       # 6. Download MongoDB Backup from FTP
       # ==========================================
@@ -1240,6 +1334,19 @@ jobs:
 
               Write-Host "[$i/$AliveMinutes] Server running..."
 
+              if (($i % 10) -eq 0) {
+                  Write-Host "Checking MongoDB container health..."
+                  try {
+                      if (Test-Path "C:\PeykLink-MongoDocker.ps1") {
+                          . "C:\PeykLink-MongoDocker.ps1"
+                          Ensure-PeykLinkMongoRunning | Out-Null
+                      }
+                  }
+                  catch {
+                      Write-Host ("MongoDB health check failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                  }
+              }
+
               # --- پوش خودکار سشن CLI (فعلاً غیرفعال؛ بعد از دسترسی توکن uncomment کن) ---
               # if (($i % 30) -eq 0) {
               #     Write-Host "Periodic CLI session push (new files only)..."
@@ -1410,22 +1517,26 @@ jobs:
               throw "BACKUP_PASSWORD GitHub Secret is not configured."
           }
 
-          $mongoReady = $false
-
-          try {
-              $connection = Test-NetConnection `
-                -ComputerName "127.0.0.1" `
-                -Port 27017 `
-                -WarningAction SilentlyContinue
-
-              $mongoReady = $connection.TcpTestSucceeded
+          if (Test-Path "C:\PeykLink-MongoDocker.ps1") {
+              . "C:\PeykLink-MongoDocker.ps1"
+              Ensure-PeykLinkMongoRunning -ThrowOnFailure | Out-Null
           }
-          catch {
+          else {
               $mongoReady = $false
-          }
+              try {
+                  $tcp = New-Object System.Net.Sockets.TcpClient
+                  $iar = $tcp.BeginConnect("127.0.0.1", 27017, $null, $null)
+                  $mongoReady = $iar.AsyncWaitHandle.WaitOne(2000, $false)
+                  if ($mongoReady) { $tcp.EndConnect($iar) }
+                  $tcp.Close()
+              }
+              catch {
+                  $mongoReady = $false
+              }
 
-          if (-not $mongoReady) {
-              throw "MongoDB is not listening on 127.0.0.1:27017. Cannot create backup."
+              if (-not $mongoReady) {
+                  throw "MongoDB is not listening on 127.0.0.1:27017. Cannot create backup."
+              }
           }
 
           $mongoDump = $null
