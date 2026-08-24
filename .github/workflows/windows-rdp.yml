@@ -369,175 +369,134 @@ jobs:
               Notify-ServerReady -TailscaleIp "$ts_ip"
           }
       # ==========================================
-      # 4. Pull MongoDB Windows Docker image
-      # GitHub windows-latest has Docker, but only Windows containers.
-      # Official mongo Linux images will not run here.
+      # 4. Install MongoDB
+      # GitHub windows-latest ships docker.exe, but the engine pipe is
+      # usually not running, so native MSI is the reliable path.
       # ==========================================
-      - name: 4. Pull MongoDB Docker image
+      - name: 4. Install MongoDB
         shell: powershell
         run: |
 
           $MongoVersion = "8.0.28"
+          $MongoUrl = "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$MongoVersion-signed.msi"
+          $MongoMsi = "C:\mongodb.msi"
 
-          Write-Host "Checking Docker..."
+          Write-Host "Downloading MongoDB $MongoVersion..."
 
-          docker version
-          if ($LASTEXITCODE -ne 0) {
-              throw "Docker is not available on this Windows runner."
+          Invoke-WebRequest -Uri $MongoUrl -OutFile $MongoMsi
+
+          if (!(Test-Path $MongoMsi)) {
+              throw "MongoDB MSI download failed."
           }
 
-          $osType = (docker info --format "{{.OSType}}").Trim()
-          Write-Host "Docker OSType: $osType"
+          Write-Host "Installing MongoDB..."
 
-          if ($osType -ne "windows") {
-              throw "Windows containers are required. Docker OSType is '$osType'."
+          Start-Process msiexec.exe -ArgumentList "/i `"$MongoMsi`" /qn /norestart" -Wait
+          Start-Sleep -Seconds 10
+
+          $MongoService = Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue
+          if ($null -eq $MongoService) {
+              throw "MongoDB service was not found after MSI install."
           }
 
-          $osBuild = [Environment]::OSVersion.Version.Build
-          if ($osBuild -ge 26100) {
-              $MongoImage = "mongo:${MongoVersion}-windowsservercore-ltsc2025"
-          }
-          else {
-              $MongoImage = "mongo:${MongoVersion}-windowsservercore-ltsc2022"
-          }
-
-          Write-Host "OS build    : $osBuild"
-          Write-Host "Mongo image : $MongoImage"
-
-          Add-Content -Path $Env:GITHUB_ENV -Value "MONGO_DOCKER_IMAGE=$MongoImage"
-
-          Write-Host "Pulling MongoDB image..."
-          docker pull $MongoImage
-          if ($LASTEXITCODE -ne 0) {
-              throw "docker pull failed for $MongoImage"
-          }
-
-          Write-Host "MongoDB image ready."
+          Write-Host "MongoDB service found."
 
       # ==========================================
-      # 5. Start MongoDB container
-      # App / mongorestore / mongodump still use 127.0.0.1:27017
+      # 5. Start MongoDB
+      # App / mongorestore / mongodump use 127.0.0.1:27017
       # ==========================================
-      - name: 5. Start MongoDB container
+      - name: 5. Start MongoDB
         shell: powershell
         run: |
 
-          $MongoImage = $Env:MONGO_DOCKER_IMAGE
-          $ContainerName = "peyklink-mongo"
+          $MongoData = "C:\MongoDB\data\db"
 
-          if ([string]::IsNullOrWhiteSpace($MongoImage)) {
-              throw "MONGO_DOCKER_IMAGE was not set by the previous step."
+          if (Test-Path "C:\MongoDB") {
+              Write-Host "Removing old MongoDB directory..."
+              Remove-Item "C:\MongoDB" -Recurse -Force
           }
 
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "       >>> STARTING MONGODB CONTAINER <<<" -ForegroundColor Cyan
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "Image     : $MongoImage"
-          Write-Host "Container : $ContainerName"
-          Write-Host "Port      : 27017"
+          New-Item -ItemType Directory -Path $MongoData -Force | Out-Null
 
-          # GHA PowerShell uses ErrorActionPreference=Stop.
-          # docker rm/inspect write to stderr when the container is missing,
-          # and 2>$null still becomes a terminating NativeCommandError.
-          function Remove-DockerContainerIfExists([string]$Name) {
-              $prev = $ErrorActionPreference
-              $ErrorActionPreference = 'SilentlyContinue'
-              $names = @(docker ps -a --format "{{.Names}}")
-              $ErrorActionPreference = $prev
+          Write-Host "Searching for mongod.exe..."
 
-              if ($names -notcontains $Name) {
-                  return
-              }
+          $MongoExe = $null
+          $MongoSearchPaths = @(
+              "C:\Program Files\MongoDB",
+              "C:\Program Files (x86)\MongoDB"
+          )
 
-              Write-Host "Removing existing container $Name..."
-              $ErrorActionPreference = 'SilentlyContinue'
-              docker rm -f $Name | Out-Null
-              $rmExit = $LASTEXITCODE
-              $ErrorActionPreference = $prev
-              if ($rmExit -ne 0) {
-                  throw "Could not remove existing container $Name"
-              }
-          }
+          foreach ($SearchPath in $MongoSearchPaths) {
+              if (Test-Path $SearchPath) {
+                  $FoundMongo = Get-ChildItem `
+                    -Path $SearchPath `
+                    -Recurse `
+                    -Filter "mongod.exe" `
+                    -File `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
 
-          function Get-DockerContainerRunning([string]$Name) {
-              $prev = $ErrorActionPreference
-              $ErrorActionPreference = 'SilentlyContinue'
-              $value = docker inspect --format "{{.State.Running}}" $Name
-              $ErrorActionPreference = $prev
-              return ("{0}" -f $value).Trim()
-          }
-
-          Remove-DockerContainerIfExists $ContainerName
-
-          docker run -d `
-            --name $ContainerName `
-            --isolation=process `
-            --restart unless-stopped `
-            -p 27017:27017 `
-            $MongoImage `
-            --bind_ip_all
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "docker run with process isolation failed. Retrying without --isolation..." -ForegroundColor Yellow
-
-              Remove-DockerContainerIfExists $ContainerName
-
-              docker run -d `
-                --name $ContainerName `
-                --restart unless-stopped `
-                -p 27017:27017 `
-                $MongoImage `
-                --bind_ip_all
-
-              if ($LASTEXITCODE -ne 0) {
-                  throw "docker run failed for $MongoImage"
-              }
-          }
-
-          Write-Host ""
-          Write-Host "Waiting for MongoDB on port 27017..."
-
-          $MongoReady = $false
-
-          for ($i = 1; $i -le 60; $i++) {
-
-              Start-Sleep -Seconds 2
-
-              $running = Get-DockerContainerRunning $ContainerName
-              if ($running -ne "true") {
-                  Write-Host ""
-                  Write-Host "MongoDB container is not running." -ForegroundColor Red
-                  docker logs $ContainerName
-                  throw "MongoDB container exited before it became ready."
-              }
-
-              try {
-                  $Connection = Test-NetConnection `
-                    -ComputerName "127.0.0.1" `
-                    -Port 27017 `
-                    -WarningAction SilentlyContinue
-
-                  if ($Connection.TcpTestSucceeded) {
-                      $MongoReady = $true
-                      Write-Host ""
-                      Write-Host "MongoDB is listening on port 27017." -ForegroundColor Green
+                  if ($null -ne $FoundMongo) {
+                      $MongoExe = $FoundMongo.FullName
                       break
                   }
               }
-              catch {
-                  # MongoDB is not ready yet
+          }
+
+          if ($null -eq $MongoExe) {
+              throw "mongod.exe was not found on this Windows runner."
+          }
+
+          Write-Host "MongoDB executable: $MongoExe"
+          Write-Host "Data directory    : $MongoData"
+
+          Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue |
+            Stop-Service -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Starting mongod..."
+
+          $MongoProcess = Start-Process `
+            -FilePath $MongoExe `
+            -ArgumentList "--dbpath `"$MongoData`" --bind_ip 127.0.0.1 --port 27017" `
+            -WindowStyle Hidden `
+            -PassThru
+
+          Write-Host "MongoDB PID: $($MongoProcess.Id)"
+
+          Add-Content -Path $Env:GITHUB_ENV -Value "MONGO_EXE=$MongoExe"
+          Add-Content -Path $Env:GITHUB_ENV -Value "MONGO_DATA=$MongoData"
+
+          Write-Host "Waiting for MongoDB on port 27017..."
+
+          $MongoReady = $false
+          for ($i = 1; $i -le 30; $i++) {
+              Start-Sleep -Seconds 1
+
+              if ($MongoProcess.HasExited) {
+                  throw "MongoDB process stopped unexpectedly. Exit code: $($MongoProcess.ExitCode)"
               }
 
-              Write-Host "Waiting for MongoDB... [$i/60]"
+              try {
+                  $tcp = New-Object System.Net.Sockets.TcpClient
+                  $iar = $tcp.BeginConnect("127.0.0.1", 27017, $null, $null)
+                  $ok = $iar.AsyncWaitHandle.WaitOne(1000, $false)
+                  if ($ok) {
+                      $tcp.EndConnect($iar)
+                      $MongoReady = $true
+                  }
+                  $tcp.Close()
+              }
+              catch { }
+
+              if ($MongoReady) {
+                  Write-Host "MongoDB is listening on port 27017." -ForegroundColor Green
+                  break
+              }
+
+              Write-Host "Waiting for MongoDB... [$i/30]"
           }
 
           if (!$MongoReady) {
-              Write-Host ""
-              Write-Host "==================================================" -ForegroundColor Red
-              Write-Host "       >>> MONGODB FAILED TO START <<<" -ForegroundColor Red
-              Write-Host "==================================================" -ForegroundColor Red
-              docker ps -a --filter "name=$ContainerName"
-              docker logs $ContainerName
               throw "MongoDB did not start on port 27017."
           }
 
@@ -545,64 +504,24 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> MONGODB IS RUNNING <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "Address   : mongodb://127.0.0.1:27017"
-          Write-Host "Container : $ContainerName"
-          Write-Host "Image     : $MongoImage"
-          docker ps --filter "name=$ContainerName"
+          Write-Host "Address : mongodb://127.0.0.1:27017"
+          Write-Host "PID     : $($MongoProcess.Id)"
+          Write-Host "Data    : $MongoData"
+          Write-Host "Mongo   : $MongoExe"
           Write-Host "==================================================" -ForegroundColor Green
 
           $mongoHelper = @(
             'function Test-PeykLinkMongoPort {'
             '    param([int]$TimeoutMs = 2000)'
-            '    foreach ($hostName in @("127.0.0.1", "localhost")) {'
-            '        $client = $null'
-            '        try {'
-            '            $client = New-Object System.Net.Sockets.TcpClient'
-            '            $iar = $client.BeginConnect($hostName, 27017, $null, $null)'
-            '            $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)'
-            '            if ($ok) {'
-            '                $client.EndConnect($iar)'
-            '                return $true'
-            '            }'
-            '        } catch { }'
-            '        finally { if ($client) { $client.Close() } }'
-            '    }'
+            '    $client = $null'
+            '    try {'
+            '        $client = New-Object System.Net.Sockets.TcpClient'
+            '        $iar = $client.BeginConnect("127.0.0.1", 27017, $null, $null)'
+            '        $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)'
+            '        if ($ok) { $client.EndConnect($iar); return $true }'
+            '    } catch { }'
+            '    finally { if ($client) { $client.Close() } }'
             '    return $false'
-            '}'
-            'function Get-PeykLinkMongoContainerState {'
-            '    param([string]$Name = "peyklink-mongo")'
-            '    $prev = $ErrorActionPreference'
-            '    $ErrorActionPreference = "SilentlyContinue"'
-            '    $running = docker inspect --format "{{.State.Running}}" $Name'
-            '    $code = $LASTEXITCODE'
-            '    $ErrorActionPreference = $prev'
-            '    if ($code -ne 0) { return "missing" }'
-            '    if (("{0}" -f $running).Trim() -eq "true") { return "running" }'
-            '    return "stopped"'
-            '}'
-            'function Start-PeykLinkMongoContainer {'
-            '    param([string]$Name = "peyklink-mongo")'
-            '    $image = $Env:MONGO_DOCKER_IMAGE'
-            '    if ([string]::IsNullOrWhiteSpace($image)) {'
-            '        $image = "mongo:8.0.28-windowsservercore-ltsc2025"'
-            '    }'
-            '    $state = Get-PeykLinkMongoContainerState $Name'
-            '    Write-Host ("MongoDB container state: {0}" -f $state)'
-            '    if ($state -eq "running") { return }'
-            '    $prev = $ErrorActionPreference'
-            '    $ErrorActionPreference = "SilentlyContinue"'
-            '    if ($state -eq "stopped") {'
-            '        Write-Host "Starting stopped MongoDB container..."'
-            '        docker start $Name | Out-Null'
-            '        $ErrorActionPreference = $prev'
-            '        return'
-            '    }'
-            '    Write-Host ("Creating MongoDB container from {0}..." -f $image)'
-            '    docker run -d --name $Name --isolation=process --restart unless-stopped -p 27017:27017 $image --bind_ip_all | Out-Null'
-            '    if ($LASTEXITCODE -ne 0) {'
-            '        docker run -d --name $Name --restart unless-stopped -p 27017:27017 $image --bind_ip_all | Out-Null'
-            '    }'
-            '    $ErrorActionPreference = $prev'
             '}'
             'function Ensure-PeykLinkMongoRunning {'
             '    param([switch]$ThrowOnFailure)'
@@ -610,40 +529,42 @@ jobs:
             '        Write-Host "MongoDB is listening on 127.0.0.1:27017."'
             '        return $true'
             '    }'
-            '    Write-Host "MongoDB port 27017 is down. Restarting container..." -ForegroundColor Yellow'
-            '    $prev = $ErrorActionPreference'
-            '    $ErrorActionPreference = "SilentlyContinue"'
-            '    docker ps -a --filter "name=peyklink-mongo"'
-            '    docker logs --tail 80 peyklink-mongo'
-            '    $ErrorActionPreference = $prev'
-            '    Start-PeykLinkMongoContainer'
-            '    for ($n = 1; $n -le 60; $n++) {'
+            '    Write-Host "MongoDB port 27017 is down. Restarting mongod..." -ForegroundColor Yellow'
+            '    $exe = $Env:MONGO_EXE'
+            '    $data = $Env:MONGO_DATA'
+            '    if ([string]::IsNullOrWhiteSpace($data)) { $data = "C:\MongoDB\data\db" }'
+            '    if ([string]::IsNullOrWhiteSpace($exe) -or !(Test-Path $exe)) {'
+            '        $found = Get-ChildItem -Path @("C:\Program Files\MongoDB","C:\Program Files (x86)\MongoDB") -Recurse -Filter "mongod.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1'
+            '        if ($found) { $exe = $found.FullName }'
+            '    }'
+            '    if ([string]::IsNullOrWhiteSpace($exe) -or !(Test-Path $exe)) {'
+            '        if ($ThrowOnFailure) { throw "mongod.exe was not found. Cannot restart MongoDB." }'
+            '        return $false'
+            '    }'
+            '    if (!(Test-Path $data)) { New-Item -ItemType Directory -Path $data -Force | Out-Null }'
+            '    Get-Process -Name "mongod" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue'
+            '    Start-Sleep -Seconds 2'
+            '    Start-Process -FilePath $exe -ArgumentList "--dbpath `"$data`" --bind_ip 127.0.0.1 --port 27017" -WindowStyle Hidden | Out-Null'
+            '    for ($n = 1; $n -le 30; $n++) {'
             '        Start-Sleep -Seconds 2'
             '        if (Test-PeykLinkMongoPort) {'
             '            Write-Host "MongoDB is listening on 127.0.0.1:27017."'
             '            return $true'
             '        }'
-            '        $state = Get-PeykLinkMongoContainerState'
-            '        if ($state -ne "running") { Start-PeykLinkMongoContainer }'
-            '        Write-Host ("Waiting for MongoDB after restart... [{0}/60] state={1}" -f $n, $state)'
+            '        Write-Host ("Waiting for MongoDB after restart... [{0}/30]" -f $n)'
             '    }'
-            '    if ($ThrowOnFailure) {'
-            '        $ErrorActionPreference = "SilentlyContinue"'
-            '        docker ps -a --filter "name=peyklink-mongo"'
-            '        docker logs peyklink-mongo'
-            '        throw "MongoDB is not listening on 127.0.0.1:27017. Cannot create backup."'
-            '    }'
+            '    if ($ThrowOnFailure) { throw "MongoDB is not listening on 127.0.0.1:27017. Cannot create backup." }'
             '    return $false'
             '}'
           )
 
           $utf8Bom = New-Object System.Text.UTF8Encoding $true
           [System.IO.File]::WriteAllText(
-            "C:\PeykLink-MongoDocker.ps1",
+            "C:\PeykLink-Mongo.ps1",
             ($mongoHelper -join "`r`n"),
             $utf8Bom
           )
-          Write-Host "Mongo helper ready: C:\PeykLink-MongoDocker.ps1"
+          Write-Host "Mongo helper ready: C:\PeykLink-Mongo.ps1"
 
       # ==========================================
       # 6. Download MongoDB Backup from FTP
@@ -1335,10 +1256,10 @@ jobs:
               Write-Host "[$i/$AliveMinutes] Server running..."
 
               if (($i % 10) -eq 0) {
-                  Write-Host "Checking MongoDB container health..."
+                  Write-Host "Checking MongoDB health..."
                   try {
-                      if (Test-Path "C:\PeykLink-MongoDocker.ps1") {
-                          . "C:\PeykLink-MongoDocker.ps1"
+                      if (Test-Path "C:\PeykLink-Mongo.ps1") {
+                          . "C:\PeykLink-Mongo.ps1"
                           Ensure-PeykLinkMongoRunning | Out-Null
                       }
                   }
@@ -1517,8 +1438,8 @@ jobs:
               throw "BACKUP_PASSWORD GitHub Secret is not configured."
           }
 
-          if (Test-Path "C:\PeykLink-MongoDocker.ps1") {
-              . "C:\PeykLink-MongoDocker.ps1"
+          if (Test-Path "C:\PeykLink-Mongo.ps1") {
+              . "C:\PeykLink-Mongo.ps1"
               Ensure-PeykLinkMongoRunning -ThrowOnFailure | Out-Null
           }
           else {
