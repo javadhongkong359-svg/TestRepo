@@ -1218,20 +1218,58 @@ jobs:
           Write-Host "Application: $AppPath"
           Write-Host ""
 
+          $WorkDir = "D:\PeykLinkbot\src\PeykLink.Api"
+          $BinDir = "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0"
+          $OutLog = Join-Path $BinDir "peyklink-api-stdout.log"
+          $ErrLog = Join-Path $BinDir "peyklink-api-stderr.log"
+          $CrashLog = Join-Path $BinDir "peyklink-startup-error.log"
+
+          foreach ($logFile in @($OutLog, $ErrLog, $CrashLog)) {
+              if (Test-Path $logFile) {
+                  Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+              }
+          }
+
+          $env:ASPNETCORE_URLS = "http://127.0.0.1:5044"
+          $env:ASPNETCORE_ENVIRONMENT = "Production"
+          $env:MongoDb__ConnectionString = "mongodb://127.0.0.1:27017"
+
           $Process = Start-Process `
             -FilePath $AppPath `
-            -WorkingDirectory `
-            "D:\PeykLinkbot\src\PeykLink.Api" `
-            -PassThru
+            -WorkingDirectory $WorkDir `
+            -PassThru `
+            -RedirectStandardOutput $OutLog `
+            -RedirectStandardError $ErrLog
 
-          Start-Sleep -Seconds 10
+          Start-Sleep -Seconds 30
+
+          function Write-PeykLinkApiLogs {
+              param([string]$Title)
+              Write-Host ""
+              Write-Host $Title -ForegroundColor Yellow
+              foreach ($pair in @(
+                  @{ Name = "stdout"; Path = $OutLog },
+                  @{ Name = "stderr"; Path = $ErrLog },
+                  @{ Name = "startup-error"; Path = $CrashLog }
+              )) {
+                  Write-Host ("----- {0} ({1}) -----" -f $pair.Name, $pair.Path)
+                  if (Test-Path $pair.Path) {
+                      Get-Content $pair.Path -ErrorAction SilentlyContinue
+                  }
+                  else {
+                      Write-Host "(file not found)"
+                  }
+              }
+          }
 
           if ($Process.HasExited) {
+              Write-PeykLinkApiLogs "PeykLink.Api exited during startup. Dumping logs:"
               throw "PeykLink.Api stopped immediately. ExitCode: $($Process.ExitCode)"
           }
 
           Write-Host "PeykLink.Api started successfully."
           Write-Host "PID: $($Process.Id)"
+          Write-PeykLinkApiLogs "Startup logs:"
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
