@@ -967,6 +967,32 @@ jobs:
           Write-Host "       >>> BACKUP EXTRACTED SUCCESSFULLY <<<" -ForegroundColor Green
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "Extract path: $ExtractPath"
+
+          $CliSessionsZip = Get-ChildItem `
+            $ExtractPath `
+            -Recurse `
+            -Filter "peyklink-cli-sessions.zip" `
+            -File `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          $CliSessionsDest = "C:\PeykLinkCliSessions"
+          if (Test-Path $CliSessionsDest) {
+              Remove-Item $CliSessionsDest -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          if ($null -ne $CliSessionsZip) {
+              Write-Host "Restoring CLI session files from backup..."
+              New-Item -ItemType Directory -Path $CliSessionsDest -Force | Out-Null
+              & $SevenZip x `
+                $CliSessionsZip.FullName `
+                "-o$CliSessionsDest" `
+                "-y"
+              Write-Host "CLI sessions staged at $CliSessionsDest"
+          }
+          else {
+              Write-Host "No peyklink-cli-sessions.zip in backup (older backup or first run)."
+          }
       # ==========================================
       # 8. Restore MongoDB
       # ==========================================
@@ -1140,6 +1166,42 @@ jobs:
 
           Write-Host "Repository cloned successfully."
 
+          $CliSessionsDest = "C:\PeykLinkCliSessions"
+          $RepoSessions = "D:\PeykLinkbot\telegram-cli-sessions"
+          if (!(Test-Path $CliSessionsDest)) {
+              New-Item -ItemType Directory -Path $CliSessionsDest -Force | Out-Null
+          }
+
+          $hostSessions = @(Get-ChildItem `
+            $CliSessionsDest `
+            -Recurse `
+            -File `
+            -Filter "*.session" `
+            -ErrorAction SilentlyContinue)
+
+          if ($hostSessions.Count -gt 0) {
+              Write-Host "Using $($hostSessions.Count) CLI session file(s) from host $CliSessionsDest"
+          }
+          elseif (Test-Path $RepoSessions) {
+              $seed = @(Get-ChildItem `
+                $RepoSessions `
+                -File `
+                -Filter "*.session" `
+                -ErrorAction SilentlyContinue)
+
+              foreach ($file in $seed) {
+                  Copy-Item $file.FullName -Destination (Join-Path $CliSessionsDest $file.Name) -Force
+                  Write-Host "Seeded CLI session onto host: $($file.Name)"
+              }
+
+              if ($seed.Count -eq 0) {
+                  Write-Host "No CLI session files in backup or repo; login will be required."
+              }
+          }
+          else {
+              Write-Host "No CLI session files on host or in repo; login will be required."
+          }
+
       # ==========================================
       # 10. Restore .NET Dependencies
       # ==========================================
@@ -1233,6 +1295,9 @@ jobs:
           $env:ASPNETCORE_URLS = "http://127.0.0.1:5044"
           $env:ASPNETCORE_ENVIRONMENT = "Production"
           $env:MongoDb__ConnectionString = "mongodb://127.0.0.1:27017"
+          $env:TelegramCli__SessionsDirectory = "C:\PeykLinkCliSessions"
+          New-Item -ItemType Directory -Path $env:TelegramCli__SessionsDirectory -Force | Out-Null
+          Write-Host "CLI sessions directory: $($env:TelegramCli__SessionsDirectory)"
 
           $Process = Start-Process `
             -FilePath $AppPath `
@@ -1642,6 +1707,33 @@ jobs:
 
           if (Test-Path $BackupZip) {
               Remove-Item $BackupZip -Force
+          }
+
+          Write-Host "Stopping PeykLink.Api so CLI session files can be copied..."
+          Get-Process -Name "PeykLink.Api" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          $CliSessionsDest = "C:\PeykLinkCliSessions"
+          $CliSessionsZip = Join-Path $DumpOut "peyklink-cli-sessions.zip"
+          if (Test-Path $CliSessionsDest) {
+              $sessionFiles = @(Get-ChildItem `
+                $CliSessionsDest `
+                -Recurse `
+                -File `
+                -Filter "*.session" `
+                -ErrorAction SilentlyContinue)
+              if ($sessionFiles.Count -gt 0) {
+                  Write-Host "Packing $($sessionFiles.Count) CLI session file(s) from host into backup..."
+                  if (Test-Path $CliSessionsZip) {
+                      Remove-Item $CliSessionsZip -Force
+                  }
+                  $sessionNames = $sessionFiles | ForEach-Object { $_.FullName }
+                  Compress-Archive -Path $sessionNames -DestinationPath $CliSessionsZip -Force
+              }
+              else {
+                  Write-Host "No CLI session files on host to pack."
+              }
           }
 
           Write-Host "Creating password-protected ZIP..."
