@@ -105,6 +105,23 @@ jobs:
             '    $id = Escape-TelegramHtml $run.RunId'
             '    return ("Run: <a href=""{0}"">#{1}</a>" -f $url, $id)'
             '}'
+            'function Format-Duration {'
+            '    param([TimeSpan]$Duration)'
+            '    if ($Duration.TotalHours -ge 1) { return "{0:hh\:mm\:ss}" -f $Duration }'
+            '    return "{0:mm\:ss}" -f $Duration'
+            '}'
+            'function Get-JobElapsedText {'
+            '    $started = $Env:GITHUB_RUN_STARTED_AT'
+            '    if ([string]::IsNullOrWhiteSpace($started)) { return "" }'
+            '    try {'
+            '        $startUtc = [DateTime]::Parse('
+            '            $started,'
+            '            $null,'
+            '            [System.Globalization.DateTimeStyles]::RoundtripKind'
+            '        ).ToUniversalTime()'
+            '        return (Format-Duration ((Get-Date).ToUniversalTime() - $startUtc))'
+            '    } catch { return "" }'
+            '}'
             'function Notify-ServerReady {'
             '    param([string]$TailscaleIp, [string]$Username, [string]$Password)'
             '    $stamp = Get-TehranStamp'
@@ -197,27 +214,56 @@ jobs:
             '        [long]$ZipBytes,'
             '        [int]$BsonCount,'
             '        [string]$FtpHost,'
-            '        [string]$RemotePath'
+            '        [string]$RemotePath,'
+            '        [string]$PhaseTimingsText = "",'
+            '        [string]$JobElapsedText = ""'
             '    )'
             '    $stamp = Get-TehranStamp'
+            '    $timingLines = @()'
+            '    if (-not [string]::IsNullOrWhiteSpace($PhaseTimingsText)) {'
+            '        $timingLines += ""'
+            '        $timingLines += "<b>Timing breakdown</b>"'
+            '        $timingLines += $PhaseTimingsText'
+            '    }'
+            '    if (-not [string]::IsNullOrWhiteSpace($JobElapsedText)) {'
+            '        $timingLines += ("Job elapsed (run start): <code>{0}</code>" -f $JobElapsedText)'
+            '    }'
             '    $msg = @('
             '        "<b>PeykLink Backup</b>",'
             '        "Status: <b>BACKUP READY AND UPLOADED</b>",'
             '        "",'
             '        ("Finished: <code>{0}</code> (Tehran)" -f $stamp),'
-            '        ("Duration: <code>{0}</code>" -f $DurationText),'
+            '        ("Total backup: <code>{0}</code>" -f $DurationText),'
             '        ("Size: <code>{0}</code> ({1} bytes)" -f $SizeText, $ZipBytes),'
             '        ("BSON files: <code>{0}</code>" -f $BsonCount),'
             '        ("FTP Host: <code>{0}</code>" -f $FtpHost),'
             '        ("Path: <code>{0}</code>" -f $RemotePath),'
             '        (Format-RunLink)'
-            '    ) -join "`n"'
+            '    ) + $timingLines'
+            '    $msg = $msg -join "`n"'
             '    Send-TelegramNotify $msg'
             '}'
             'function Notify-BackupFailed {'
-            '    param([string]$ErrorMessage)'
+            '    param('
+            '        [string]$ErrorMessage,'
+            '        [string]$DurationText = "",'
+            '        [string]$PhaseTimingsText = "",'
+            '        [string]$JobElapsedText = ""'
+            '    )'
             '    $stamp = Get-TehranStamp'
             '    $safe = Escape-TelegramHtml $ErrorMessage'
+            '    $timingLines = @()'
+            '    if (-not [string]::IsNullOrWhiteSpace($DurationText)) {'
+            '        $timingLines += ("Backup elapsed: <code>{0}</code>" -f $DurationText)'
+            '    }'
+            '    if (-not [string]::IsNullOrWhiteSpace($PhaseTimingsText)) {'
+            '        $timingLines += ""'
+            '        $timingLines += "<b>Timing breakdown</b>"'
+            '        $timingLines += $PhaseTimingsText'
+            '    }'
+            '    if (-not [string]::IsNullOrWhiteSpace($JobElapsedText)) {'
+            '        $timingLines += ("Job elapsed (run start): <code>{0}</code>" -f $JobElapsedText)'
+            '    }'
             '    $msg = @('
             '        "<b>PeykLink Backup</b>",'
             '        "Status: <b>BACKUP FAILED</b>",'
@@ -225,12 +271,14 @@ jobs:
             '        ("Error time: <code>{0}</code> (Tehran)" -f $stamp),'
             '        ("Error: <code>{0}</code>" -f $safe),'
             '        (Format-RunLink)'
-            '    ) -join "`n"'
+            '    ) + $timingLines'
+            '    $msg = $msg -join "`n"'
             '    Send-TelegramNotify $msg'
             '}'
             'function Notify-JobFinished {'
             '    param([string]$JobStatus)'
             '    $stamp = Get-TehranStamp'
+            '    $jobElapsed = Get-JobElapsedText'
             '    $status = ("{0}" -f $JobStatus).Trim().ToLowerInvariant()'
             '    switch ($status) {'
             '        "success" {'
@@ -252,10 +300,13 @@ jobs:
             '        "",'
             '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
             '        ("Job Status: <code>{0}</code>" -f $JobStatus),'
-            '        (Format-RunLink),'
-            '        "",'
-            '        $extra'
-            '    ) -join "`n"'
+            '        (Format-RunLink)'
+            '    )'
+            '    if (-not [string]::IsNullOrWhiteSpace($jobElapsed)) {'
+            '        $msg += ("Job elapsed (run start): <code>{0}</code>" -f $jobElapsed)'
+            '    }'
+            '    $msg += @("", $extra)'
+            '    $msg = $msg -join "`n"'
             '    Send-TelegramNotify $msg'
             '}'
           )
@@ -1468,7 +1519,7 @@ jobs:
         shell: powershell
         run: |
 
-          $AliveMinutes = 280
+          $AliveMinutes = 345
           $rdpUser = ""
 
           if (Test-Path "C:\PeykLink-ServerCreds.ps1") {
@@ -1657,8 +1708,28 @@ jobs:
           }
           else {
               function Notify-BackupStarted { Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow }
-              function Notify-BackupSucceeded { Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow }
-              function Notify-BackupFailed { Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow }
+              function Notify-BackupSucceeded {
+                  param(
+                      [string]$DurationText,
+                      [string]$SizeText,
+                      [long]$ZipBytes,
+                      [int]$BsonCount,
+                      [string]$FtpHost,
+                      [string]$RemotePath,
+                      [string]$PhaseTimingsText = "",
+                      [string]$JobElapsedText = ""
+                  )
+                  Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow
+              }
+              function Notify-BackupFailed {
+                  param(
+                      [string]$ErrorMessage,
+                      [string]$DurationText = "",
+                      [string]$PhaseTimingsText = "",
+                      [string]$JobElapsedText = ""
+                  )
+                  Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow
+              }
           }
 
           function Format-ByteSize([long]$Bytes) {
@@ -1666,6 +1737,30 @@ jobs:
               if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
               if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
               return "$Bytes B"
+          }
+
+          $BackupPhaseTimings = [ordered]@{}
+
+          function Start-BackupPhase([string]$Name) {
+              $script:BackupCurrentPhase = $Name
+              $script:BackupPhaseStartedAt = (Get-Date).ToUniversalTime()
+          }
+
+          function Complete-BackupPhase {
+              if ([string]::IsNullOrWhiteSpace($script:BackupCurrentPhase)) { return }
+              $elapsed = (Get-Date).ToUniversalTime() - $script:BackupPhaseStartedAt
+              $BackupPhaseTimings[$script:BackupCurrentPhase] = $elapsed
+              Write-Host ("Phase [{0}] took {1}" -f $script:BackupCurrentPhase, (Format-Duration $elapsed))
+              $script:BackupCurrentPhase = $null
+              $script:BackupPhaseStartedAt = $null
+          }
+
+          function Get-PhaseTimingsText {
+              $lines = New-Object System.Collections.Generic.List[string]
+              foreach ($phase in $BackupPhaseTimings.Keys) {
+                  $lines.Add(("  {0}: <code>{1}</code>" -f $phase, (Format-Duration $BackupPhaseTimings[$phase])))
+              }
+              return ($lines -join "`n")
           }
 
           Write-Host "==================================================" -ForegroundColor Cyan
@@ -1792,6 +1887,8 @@ jobs:
 
           Write-Host "Running full mongodump..."
 
+          Start-BackupPhase "MongoDB dump"
+
           & $mongoDump `
             --host "127.0.0.1:27017" `
             --out $DumpOut
@@ -1812,6 +1909,8 @@ jobs:
           }
 
           Write-Host "BSON files dumped: $($bsonFiles.Count)"
+
+          Complete-BackupPhase
 
           $sevenZipPaths = @(
               "C:\Program Files\7-Zip\7z.exe",
@@ -1884,6 +1983,8 @@ jobs:
 
           Write-Host "Creating password-protected ZIP..."
 
+          Start-BackupPhase "ZIP archive"
+
           & $sevenZip a `
             -tzip `
             -mx=9 `
@@ -1901,6 +2002,8 @@ jobs:
           if ($zipSize -eq 0) {
               throw "Backup ZIP is empty."
           }
+
+          Complete-BackupPhase
 
           Write-Host "ZIP created. Size: $zipSize bytes"
 
@@ -1930,6 +2033,8 @@ jobs:
           Write-Host "Uploading to FTP path: $remotePath"
           Write-Host "Same path as bot Backup.Ftp.RemoteDirectory/RemoteFileName"
           Write-Host "Same filename will be overwritten for the next restore."
+
+          Start-BackupPhase "FTP upload"
 
           $curlCfg = "C:\ftp-curl-upload.conf"
           "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
@@ -1969,6 +2074,8 @@ jobs:
               Remove-Item $curlCfg -Force -ErrorAction SilentlyContinue
           }
 
+          Complete-BackupPhase
+
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> BACKUP UPLOADED TO FTP <<<" -ForegroundColor Green
@@ -1979,8 +2086,10 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
 
           $duration = (Get-Date).ToUniversalTime() - $BackupStartedAtUtc
-          $durationText = "{0:hh\:mm\:ss}" -f $duration
+          $durationText = Format-Duration $duration
           $sizeText = Format-ByteSize $zipSize
+          $phaseTimingsText = Get-PhaseTimingsText
+          $jobElapsedText = Get-JobElapsedText
 
           Notify-BackupSucceeded `
             -DurationText $durationText `
@@ -1988,7 +2097,9 @@ jobs:
             -ZipBytes $zipSize `
             -BsonCount $bsonFiles.Count `
             -FtpHost $Env:FTP_HOST `
-            -RemotePath $remotePath
+            -RemotePath $remotePath `
+            -PhaseTimingsText $phaseTimingsText `
+            -JobElapsedText $jobElapsedText
 
           Write-Host "Removing local backup files after FTP upload..."
           if (Test-Path $BackupZip) {
@@ -2000,10 +2111,21 @@ jobs:
 
           }
           catch {
+              Complete-BackupPhase
+
               $errMsg = $_.Exception.Message
               if ([string]::IsNullOrWhiteSpace($errMsg)) { $errMsg = "$_" }
 
-              Notify-BackupFailed -ErrorMessage $errMsg
+              $duration = (Get-Date).ToUniversalTime() - $BackupStartedAtUtc
+              $durationText = Format-Duration $duration
+              $phaseTimingsText = Get-PhaseTimingsText
+              $jobElapsedText = Get-JobElapsedText
+
+              Notify-BackupFailed `
+                -ErrorMessage $errMsg `
+                -DurationText $durationText `
+                -PhaseTimingsText $phaseTimingsText `
+                -JobElapsedText $jobElapsedText
 
               throw
           }
