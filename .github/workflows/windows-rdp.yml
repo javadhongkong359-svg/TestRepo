@@ -106,7 +106,7 @@ jobs:
             '    return ("Run: <a href=""{0}"">#{1}</a>" -f $url, $id)'
             '}'
             'function Notify-ServerReady {'
-            '    param([string]$TailscaleIp)'
+            '    param([string]$TailscaleIp, [string]$Username, [string]$Password)'
             '    $stamp = Get-TehranStamp'
             '    $msg = @('
             '        "<b>PeykLink Server</b>",'
@@ -114,7 +114,8 @@ jobs:
             '        "",'
             '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
             '        ("Tailscale IP: <code>{0}</code>" -f (Escape-TelegramHtml (("{0}" -f $TailscaleIp) -replace "\r?\n", ", "))),'
-            '        "User: <code>CynetAdmin</code>",'
+            '        ("User: <code>{0}</code>" -f (Escape-TelegramHtml $Username)),'
+            '        ("Password: <code>{0}</code>" -f (Escape-TelegramHtml $Password)),'
             '        "Hostname: <code>github-rdp-server</code>",'
             '        (Format-RunLink),'
             '        "",'
@@ -138,15 +139,20 @@ jobs:
             '    Send-TelegramNotify $msg'
             '}'
             'function Notify-ServerRunning {'
-            '    param([int]$AliveMinutes)'
+            '    param([int]$AliveMinutes, [string]$Username = "")'
             '    $stamp = Get-TehranStamp'
+            '    $userLine = if ([string]::IsNullOrWhiteSpace($Username)) {'
+            '        "RDP: credentials were sent at server start"'
+            '    } else {'
+            '        ("RDP User: <code>{0}</code> (password in start message)" -f (Escape-TelegramHtml $Username))'
+            '    }'
             '    $msg = @('
             '        "<b>PeykLink Server</b>",'
             '        "Status: <b>SERVER IS RUNNING</b>",'
             '        "",'
             '        ("Start time: <code>{0}</code> (Tehran)" -f $stamp),'
             '        ("Keep-alive: <code>{0}</code> minutes" -f $AliveMinutes),'
-            '        "RDP: <code>CynetAdmin</code>",'
+            '        $userLine,'
             '        "MongoDB: <code>127.0.0.1:27017</code>",'
             '        "App: <code>PeykLink.Api</code>",'
             '        (Format-RunLink),'
@@ -263,6 +269,72 @@ jobs:
 
           Write-Host "Telegram notifier ready: C:\PeykLink-TelegramNotify.ps1"
 
+          $credLines = @(
+            '$script:PeykLinkCredsPath = "C:\ProgramData\PeykLink\server-credentials.json"'
+            'function New-PeykLinkRandomUsername {'
+            '    $chars = "abcdefghijkmnopqrstuvwxyz23456789"'
+            '    $bytes = New-Object byte[] 8'
+            '    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)'
+            '    $suffix = -join (0..7 | ForEach-Object { $chars[[int]$bytes[$_] % $chars.Length] })'
+            '    return ("pl" + $suffix)'
+            '}'
+            'function New-PeykLinkRandomPassword {'
+            '    param([int]$Length = 20)'
+            '    $lower = "abcdefghijkmnopqrstuvwxyz"'
+            '    $upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"'
+            '    $digits = "23456789"'
+            '    $special = "@#$%&*+-="'
+            '    $all = $lower + $upper + $digits + $special'
+            '    $bytes = New-Object byte[] ($Length + 4)'
+            '    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)'
+            '    $result = @('
+            '        $lower[[int]$bytes[0] % $lower.Length],'
+            '        $upper[[int]$bytes[1] % $upper.Length],'
+            '        $digits[[int]$bytes[2] % $digits.Length],'
+            '        $special[[int]$bytes[3] % $special.Length]'
+            '    )'
+            '    for ($i = 4; $i -lt $Length; $i++) {'
+            '        $result += $all[[int]$bytes[$i] % $all.Length]'
+            '    }'
+            '    return (-join ($result | Get-Random -Count $result.Count))'
+            '}'
+            'function Save-PeykLinkServerCredentials {'
+            '    param([string]$Username, [string]$Password)'
+            '    $dir = Split-Path $script:PeykLinkCredsPath -Parent'
+            '    New-Item -ItemType Directory -Path $dir -Force | Out-Null'
+            '    $obj = [ordered]@{'
+            '        Username = $Username'
+            '        Password = $Password'
+            '        CreatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")'
+            '    }'
+            '    $json = $obj | ConvertTo-Json -Compress'
+            '    $utf8 = New-Object System.Text.UTF8Encoding $false'
+            '    [System.IO.File]::WriteAllText($script:PeykLinkCredsPath, $json, $utf8)'
+            '    icacls $script:PeykLinkCredsPath /inheritance:r /grant:r "Administrators:(F)" "SYSTEM:(F)" | Out-Null'
+            '    return $script:PeykLinkCredsPath'
+            '}'
+            'function Get-PeykLinkServerCredentials {'
+            '    if (!(Test-Path $script:PeykLinkCredsPath)) {'
+            '        throw ("Server credentials file not found: " + $script:PeykLinkCredsPath)'
+            '    }'
+            '    return (Get-Content $script:PeykLinkCredsPath -Raw | ConvertFrom-Json)'
+            '}'
+            'function New-PeykLinkServerCredentials {'
+            '    $username = New-PeykLinkRandomUsername'
+            '    $password = New-PeykLinkRandomPassword'
+            '    Save-PeykLinkServerCredentials -Username $username -Password $password | Out-Null'
+            '    return [pscustomobject]@{ Username = $username; Password = $password }'
+            '}'
+          )
+
+          [System.IO.File]::WriteAllText(
+            "C:\PeykLink-ServerCreds.ps1",
+            ($credLines -join "`r`n"),
+            $utf8Bom
+          )
+
+          Write-Host "Server credentials helper ready: C:\PeykLink-ServerCreds.ps1"
+
       # ==========================================
       # 1. Enable Remote Desktop & Firewall
       # ==========================================
@@ -288,33 +360,50 @@ jobs:
           Write-Host "Remote Desktop enabled."
 
       # ==========================================
-      # 2. Create Admin Account
+      # 2. Create Admin Account (random user + password per run)
+      # Credentials are masked in GitHub logs and sent only via Telegram.
       # ==========================================
       - name: 2. Create Admin Account
         shell: powershell
         run: |
 
-          Write-Host "Creating CynetAdmin..."
+          if (!(Test-Path "C:\PeykLink-ServerCreds.ps1")) {
+              throw "Server credentials helper missing."
+          }
 
-          $Password = ConvertTo-SecureString `
-            "Cynet@2026" `
+          . "C:\PeykLink-ServerCreds.ps1"
+          $creds = New-PeykLinkServerCredentials
+
+          Write-Host "::add-mask::$($creds.Password)"
+          Write-Host "::add-mask::$($creds.Username)"
+
+          $securePassword = ConvertTo-SecureString `
+            $creds.Password `
             -AsPlainText `
             -Force
 
-          New-LocalUser `
-            -Name "CynetAdmin" `
-            -Password $Password `
-            -PasswordNeverExpires `
-            -ErrorAction SilentlyContinue
+          $existing = Get-LocalUser -Name $creds.Username -ErrorAction SilentlyContinue
+          if ($null -eq $existing) {
+              New-LocalUser `
+                -Name $creds.Username `
+                -Password $securePassword `
+                -PasswordNeverExpires `
+                -ErrorAction Stop
+          }
+          else {
+              Set-LocalUser `
+                -Name $creds.Username `
+                -Password $securePassword `
+                -ErrorAction Stop
+          }
 
           Add-LocalGroupMember `
             -Group "Administrators" `
-            -Member "CynetAdmin" `
+            -Member $creds.Username `
             -ErrorAction SilentlyContinue
 
-          net user runneradmin Cynet@2026
-
-          Write-Host "Admin account ready."
+          Write-Host "Random admin account created."
+          Write-Host "Credentials are stored on the runner and will be sent via Telegram after Tailscale connects."
 
       # ==========================================
       # 3. Install & Connect Tailscale VPN
@@ -352,13 +441,19 @@ jobs:
             "C:\Program Files\Tailscale\tailscale.exe" `
             ip -4
 
+          if (!(Test-Path "C:\PeykLink-ServerCreds.ps1")) {
+              throw "Server credentials helper missing."
+          }
+
+          . "C:\PeykLink-ServerCreds.ps1"
+          $rdpCreds = Get-PeykLinkServerCredentials
+
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "Tailscale IP : $ts_ip" -ForegroundColor Yellow
-          Write-Host "Username     : CynetAdmin" -ForegroundColor Yellow
-          Write-Host "Password     : Cynet@2026" -ForegroundColor Yellow
+          Write-Host "RDP login    : sent to Telegram channel (not shown in logs)" -ForegroundColor Yellow
           Write-Host ""
           Write-Host "Connect using Remote Desktop:"
           Write-Host "mstsc -> $ts_ip"
@@ -366,7 +461,10 @@ jobs:
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              Notify-ServerReady -TailscaleIp "$ts_ip"
+              Notify-ServerReady `
+                -TailscaleIp "$ts_ip" `
+                -Username "$($rdpCreds.Username)" `
+                -Password "$($rdpCreds.Password)"
           }
       # ==========================================
       # 4. Install MongoDB
@@ -1245,31 +1343,100 @@ jobs:
 
       # ==========================================
       # 12. Run PeykLink.Api
+      # WorkingDirectory must be bin (not project src) so appsettings/deps resolve.
+      # Do not use Start-Process -RedirectStandard* — pipe buffers deadlock ASP.NET logging.
       # ==========================================
       - name: 12. Run PeykLink.Api
         shell: powershell
         run: |
 
-          $AppPath = `
-            "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0\PeykLink.Api.exe"
+          $appHelper = @(
+            'function Test-PeykLinkApiHealth {'
+            '    param([int]$TimeoutSec = 5)'
+            '    try {'
+            '        $r = Invoke-WebRequest -Uri "http://127.0.0.1:5044/api/links/health" -UseBasicParsing -TimeoutSec $TimeoutSec'
+            '        return $r.StatusCode -eq 200'
+            '    } catch { return $false }'
+            '}'
+            'function Get-PeykLinkApiPaths {'
+            '    $bin = "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0"'
+            '    return @{'
+            '        BinDir = $bin'
+            '        Exe = Join-Path $bin "PeykLink.Api.exe"'
+            '        CrashLog = Join-Path $bin "peyklink-startup-error.log"'
+            '    }'
+            '}'
+            'function Set-PeykLinkApiEnvironment {'
+            '    $env:ASPNETCORE_URLS = "http://127.0.0.1:5044"'
+            '    $env:ASPNETCORE_ENVIRONMENT = "Production"'
+            '    $env:MongoDb__ConnectionString = "mongodb://127.0.0.1:27017"'
+            '    $env:TelegramCli__SessionsDirectory = "C:\PeykLinkCliSessions"'
+            '    New-Item -ItemType Directory -Path $env:TelegramCli__SessionsDirectory -Force | Out-Null'
+            '}'
+            'function Write-PeykLinkApiCrashLog {'
+            '    $crash = (Get-PeykLinkApiPaths).CrashLog'
+            '    if (Test-Path $crash) {'
+            '        Write-Host ("----- startup-error (" + $crash + ") -----") -ForegroundColor Yellow'
+            '        Get-Content $crash -ErrorAction SilentlyContinue'
+            '    }'
+            '}'
+            'function Start-PeykLinkApi {'
+            '    $paths = Get-PeykLinkApiPaths'
+            '    if (!(Test-Path $paths.Exe)) { throw ("PeykLink.Api not found: " + $paths.Exe) }'
+            '    Get-Process -Name "PeykLink.Api" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue'
+            '    Start-Sleep -Seconds 2'
+            '    Set-PeykLinkApiEnvironment'
+            '    if (Test-Path $paths.CrashLog) { Remove-Item $paths.CrashLog -Force -ErrorAction SilentlyContinue }'
+            '    $proc = Start-Process -FilePath $paths.Exe -WorkingDirectory $paths.BinDir -WindowStyle Hidden -PassThru'
+            '    for ($i = 1; $i -le 90; $i++) {'
+            '        Start-Sleep -Seconds 2'
+            '        $live = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue'
+            '        if ($null -eq $live) {'
+            '            Write-PeykLinkApiCrashLog'
+            '            throw ("PeykLink.Api exited during startup. ExitCode: " + $proc.ExitCode)'
+            '        }'
+            '        if (Test-PeykLinkApiHealth) { return $live.Id }'
+            '        Write-Host ("Waiting for /api/links/health... [{0}/90]" -f $i)'
+            '    }'
+            '    Write-PeykLinkApiCrashLog'
+            '    throw "PeykLink.Api health check timed out after 180 seconds."'
+            '}'
+            'function Ensure-PeykLinkApiRunning {'
+            '    param([switch]$ThrowOnFailure)'
+            '    if (Test-PeykLinkApiHealth) {'
+            '        Write-Host "PeykLink.Api health OK."'
+            '        return $true'
+            '    }'
+            '    Write-Host "PeykLink.Api is down. Restarting..." -ForegroundColor Yellow'
+            '    try {'
+            '        $appPid = Start-PeykLinkApi'
+            '        Write-Host ("PeykLink.Api restarted. PID: " + $appPid)'
+            '        return $true'
+            '    } catch {'
+            '        Write-Host ("PeykLink.Api restart failed: " + $_.Exception.Message) -ForegroundColor Yellow'
+            '        if ($ThrowOnFailure) { throw }'
+            '        return $false'
+            '    }'
+            '}'
+          )
 
-          if (!(Test-Path $AppPath)) {
+          $utf8Bom = New-Object System.Text.UTF8Encoding $true
+          [System.IO.File]::WriteAllText(
+            "C:\PeykLink-App.ps1",
+            ($appHelper -join "`r`n"),
+            $utf8Bom
+          )
+          Write-Host "App helper ready: C:\PeykLink-App.ps1"
 
+          . "C:\PeykLink-App.ps1"
+          $paths = Get-PeykLinkApiPaths
+
+          if (!(Test-Path $paths.Exe)) {
               Write-Host "ERROR: Application not found!"
-              Write-Host ""
-              Write-Host "Expected path:"
-              Write-Host $AppPath
-              Write-Host ""
-
-              Write-Host "Checking bin directory..."
-
+              Write-Host "Expected path: $($paths.Exe)"
               if (Test-Path "D:\PeykLinkbot\src\PeykLink.Api\bin") {
-
-                  Get-ChildItem `
-                    "D:\PeykLinkbot\src\PeykLink.Api\bin" `
-                    -Recurse
+                  Get-ChildItem "D:\PeykLinkbot\src\PeykLink.Api\bin" -Recurse
               }
-
               throw "PeykLink.Api executable not found."
           }
 
@@ -1277,68 +1444,20 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> STARTING PEYKLINK API <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "Application: $AppPath"
+          Write-Host "Application: $($paths.Exe)"
+          Write-Host "Working dir: $($paths.BinDir)"
+          Write-Host "Health URL : http://127.0.0.1:5044/api/links/health"
           Write-Host ""
 
-          $WorkDir = "D:\PeykLinkbot\src\PeykLink.Api"
-          $BinDir = "D:\PeykLinkbot\src\PeykLink.Api\bin\Debug\net8.0"
-          $OutLog = Join-Path $BinDir "peyklink-api-stdout.log"
-          $ErrLog = Join-Path $BinDir "peyklink-api-stderr.log"
-          $CrashLog = Join-Path $BinDir "peyklink-startup-error.log"
-
-          foreach ($logFile in @($OutLog, $ErrLog, $CrashLog)) {
-              if (Test-Path $logFile) {
-                  Remove-Item $logFile -Force -ErrorAction SilentlyContinue
-              }
-          }
-
-          $env:ASPNETCORE_URLS = "http://127.0.0.1:5044"
-          $env:ASPNETCORE_ENVIRONMENT = "Production"
-          $env:MongoDb__ConnectionString = "mongodb://127.0.0.1:27017"
-          $env:TelegramCli__SessionsDirectory = "C:\PeykLinkCliSessions"
-          New-Item -ItemType Directory -Path $env:TelegramCli__SessionsDirectory -Force | Out-Null
-          Write-Host "CLI sessions directory: $($env:TelegramCli__SessionsDirectory)"
-
-          $Process = Start-Process `
-            -FilePath $AppPath `
-            -WorkingDirectory $WorkDir `
-            -PassThru `
-            -RedirectStandardOutput $OutLog `
-            -RedirectStandardError $ErrLog
-
-          Start-Sleep -Seconds 30
-
-          function Write-PeykLinkApiLogs {
-              param([string]$Title)
-              Write-Host ""
-              Write-Host $Title -ForegroundColor Yellow
-              foreach ($pair in @(
-                  @{ Name = "stdout"; Path = $OutLog },
-                  @{ Name = "stderr"; Path = $ErrLog },
-                  @{ Name = "startup-error"; Path = $CrashLog }
-              )) {
-                  Write-Host ("----- {0} ({1}) -----" -f $pair.Name, $pair.Path)
-                  if (Test-Path $pair.Path) {
-                      Get-Content $pair.Path -ErrorAction SilentlyContinue
-                  }
-                  else {
-                      Write-Host "(file not found)"
-                  }
-              }
-          }
-
-          if ($Process.HasExited) {
-              Write-PeykLinkApiLogs "PeykLink.Api exited during startup. Dumping logs:"
-              throw "PeykLink.Api stopped immediately. ExitCode: $($Process.ExitCode)"
-          }
+          $ProcessId = Start-PeykLinkApi
 
           Write-Host "PeykLink.Api started successfully."
-          Write-Host "PID: $($Process.Id)"
-          Write-PeykLinkApiLogs "Startup logs:"
+          Write-Host "PID: $ProcessId"
+          Write-PeykLinkApiCrashLog
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              Notify-AppStarted -ProcessId $Process.Id
+              Notify-AppStarted -ProcessId $ProcessId
           }
       # ==========================================
       # 13. Keep Server Alive
@@ -1350,6 +1469,17 @@ jobs:
         run: |
 
           $AliveMinutes = 280
+          $rdpUser = ""
+
+          if (Test-Path "C:\PeykLink-ServerCreds.ps1") {
+              . "C:\PeykLink-ServerCreds.ps1"
+              try {
+                  $rdpUser = (Get-PeykLinkServerCredentials).Username
+              }
+              catch {
+                  Write-Host "Could not read RDP username from secure store." -ForegroundColor Yellow
+              }
+          }
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
@@ -1357,7 +1487,12 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
 
           Write-Host ""
-          Write-Host "RDP User     : CynetAdmin"
+          if ([string]::IsNullOrWhiteSpace($rdpUser)) {
+              Write-Host "RDP login    : see Telegram channel"
+          }
+          else {
+              Write-Host "RDP User     : $rdpUser (password in Telegram start message)"
+          }
           Write-Host "MongoDB      : 127.0.0.1:27017"
           Write-Host "Application  : PeykLink.Api"
           Write-Host "Alive for    : $AliveMinutes minutes"
@@ -1366,7 +1501,7 @@ jobs:
 
           if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
               . "C:\PeykLink-TelegramNotify.ps1"
-              Notify-ServerRunning -AliveMinutes $AliveMinutes
+              Notify-ServerRunning -AliveMinutes $AliveMinutes -Username $rdpUser
           }
 
           for ($i = 1; $i -le $AliveMinutes; $i++) {
@@ -1385,6 +1520,17 @@ jobs:
                   }
                   catch {
                       Write-Host ("MongoDB health check failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+                  }
+
+                  Write-Host "Checking PeykLink.Api health..."
+                  try {
+                      if (Test-Path "C:\PeykLink-App.ps1") {
+                          . "C:\PeykLink-App.ps1"
+                          Ensure-PeykLinkApiRunning | Out-Null
+                      }
+                  }
+                  catch {
+                      Write-Host ("PeykLink.Api health check failed: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
                   }
               }
 
