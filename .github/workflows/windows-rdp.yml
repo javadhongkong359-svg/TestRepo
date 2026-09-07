@@ -1519,7 +1519,7 @@ jobs:
         shell: powershell
         run: |
 
-          $AliveMinutes = 345
+          $AliveMinutes = 335
           $rdpUser = ""
 
           if (Test-Path "C:\PeykLink-ServerCreds.ps1") {
