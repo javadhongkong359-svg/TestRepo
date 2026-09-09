@@ -12,13 +12,12 @@ jobs:
     timeout-minutes: 360
 
     env:
-      FTP_HOST: ${{ secrets.FTP_HOST }}
-      FTP_PORT: ${{ secrets.FTP_PORT }}
-      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_HOST: linkpeyk.ir
+      FTP_PORT: "21"
+      FTP_USERNAME: xuljpwea
       FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-      # DirectAdmin File Manager: /domains/pz25177.parspack.net/public_html/peyklink
-      # Not /peyklink — that is a different folder at FTP home root.
-      FTP_REMOTE_DIRECTORY: /domains/pz25177.parspack.net/public_html/peyklink
+      # cPanel File Manager: /backupdb/linkpeyk at FTP home root (chmod 750, not public_html)
+      FTP_REMOTE_DIRECTORY: /backupdb/linkpeyk
       FTP_REMOTE_FILE: peyklink-backup.zip
       BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -724,24 +723,24 @@ jobs:
 
           $BackupZip = "C:\peyklink-backup.zip"
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST)) {
-              $Env:FTP_HOST = "2193182619.cloudydl.com"
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com") {
+              $Env:FTP_HOST = "linkpeyk.ir"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
               $Env:FTP_PORT = "21"
           }
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME)) {
-              $Env:FTP_USERNAME = "pz25177"
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME) -or $Env:FTP_USERNAME -eq "pz25177") {
+              $Env:FTP_USERNAME = "xuljpwea"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_PASSWORD)) {
-              $Env:FTP_PASSWORD = "akeCKW4M"
+              throw "FTP_PASSWORD GitHub Secret is not configured."
           }
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY)) {
-              $Env:FTP_REMOTE_DIRECTORY = "/domains/pz25177.parspack.net/public_html/peyklink"
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY) -or $Env:FTP_REMOTE_DIRECTORY -match "pz25177|parspack|public_html/peyklink") {
+              $Env:FTP_REMOTE_DIRECTORY = "/backupdb/linkpeyk"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
@@ -750,8 +749,8 @@ jobs:
 
           $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
 
-          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink") {
-              $remoteDir = "/domains/pz25177.parspack.net/public_html/peyklink"
+          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink" -or $remoteDir -match "pz25177|parspack|public_html/peyklink") {
+              $remoteDir = "/backupdb/linkpeyk"
           }
           else {
               if (-not $remoteDir.StartsWith("/")) {
@@ -766,7 +765,7 @@ jobs:
               $remoteFile = "peyklink-backup.zip"
           }
 
-          # Same File Manager folder the bot uploads to (domain public_html, not FTP-home /peyklink).
+          # Same File Manager folder the bot uploads to: /backupdb/linkpeyk at FTP home root.
           # %2F (server-root) 550s on this host; home-relative URL matches the bot.
           $remotePath = "$remoteDir/$remoteFile"
           $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
@@ -1771,24 +1770,24 @@ jobs:
 
           try {
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST)) {
-              $Env:FTP_HOST = "2193182619.cloudydl.com"
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com") {
+              $Env:FTP_HOST = "linkpeyk.ir"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
               $Env:FTP_PORT = "21"
           }
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME)) {
-              $Env:FTP_USERNAME = "pz25177"
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME) -or $Env:FTP_USERNAME -eq "pz25177") {
+              $Env:FTP_USERNAME = "xuljpwea"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_PASSWORD)) {
-              $Env:FTP_PASSWORD = "akeCKW4M"
+              throw "FTP_PASSWORD GitHub Secret is not configured."
           }
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY)) {
-              $Env:FTP_REMOTE_DIRECTORY = "/domains/pz25177.parspack.net/public_html/peyklink"
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY) -or $Env:FTP_REMOTE_DIRECTORY -match "pz25177|parspack|public_html/peyklink") {
+              $Env:FTP_REMOTE_DIRECTORY = "/backupdb/linkpeyk"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
@@ -2009,8 +2008,8 @@ jobs:
 
           $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
 
-          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink") {
-              $remoteDir = "/domains/pz25177.parspack.net/public_html/peyklink"
+          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink" -or $remoteDir -match "pz25177|parspack|public_html/peyklink") {
+              $remoteDir = "/backupdb/linkpeyk"
           }
           else {
               if (-not $remoteDir.StartsWith("/")) {
@@ -2025,7 +2024,7 @@ jobs:
               $remoteFile = "peyklink-backup.zip"
           }
 
-          # Same File Manager folder the bot uploads to (domain public_html, not FTP-home /peyklink).
+          # Same File Manager folder the bot uploads to: /backupdb/linkpeyk at FTP home root.
           $remotePath = "$remoteDir/$remoteFile"
           $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
           $ftpUriAbsolute = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/%2F$($remotePath.TrimStart('/'))"
