@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 360
 
     env:
-      FTP_HOST: linkpeyk.ir
+      FTP_HOST: ftp.linkpeyk.ir
       FTP_PORT: "21"
       FTP_USERNAME: xuljpwea
       FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
@@ -724,7 +724,7 @@ jobs:
           $BackupZip = "C:\peyklink-backup.zip"
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com") {
-              $Env:FTP_HOST = "linkpeyk.ir"
+              $Env:FTP_HOST = "ftp.linkpeyk.ir"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
@@ -1771,7 +1771,7 @@ jobs:
           try {
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com") {
-              $Env:FTP_HOST = "linkpeyk.ir"
+              $Env:FTP_HOST = "ftp.linkpeyk.ir"
           }
 
           if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
