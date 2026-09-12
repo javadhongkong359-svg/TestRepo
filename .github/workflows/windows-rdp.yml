@@ -537,9 +537,11 @@ jobs:
               throw "MongoDB MSI download failed."
           }
 
-          Write-Host "Installing MongoDB..."
+          Write-Host "Installing MongoDB Server only (skip Compass)..."
 
-          Start-Process msiexec.exe -ArgumentList "/i `"$MongoMsi`" /qn /norestart" -Wait
+          # Default MSI also installs Compass (huge Electron GUI) and can take ~20 min.
+          # ADDLOCAL=Server,ServerService + SHOULD_INSTALL_COMPASS=0 installs only mongod.
+          Start-Process msiexec.exe -ArgumentList "/i `"$MongoMsi`" /qn /norestart ADDLOCAL=`"Server,ServerService`" SHOULD_INSTALL_COMPASS=`"0`"" -Wait
           Start-Sleep -Seconds 10
 
           $MongoService = Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue
@@ -723,7 +725,7 @@ jobs:
 
           $BackupZip = "C:\peyklink-backup.zip"
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com") {
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com" -or $Env:FTP_HOST -eq "linkpeyk.ir") {
               $Env:FTP_HOST = "ftp.linkpeyk.ir"
           }
 
@@ -1770,7 +1772,7 @@ jobs:
 
           try {
 
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com") {
+          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com" -or $Env:FTP_HOST -eq "linkpeyk.ir") {
               $Env:FTP_HOST = "ftp.linkpeyk.ir"
           }
 
