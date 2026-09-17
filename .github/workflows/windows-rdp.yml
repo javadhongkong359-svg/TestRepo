@@ -657,6 +657,28 @@ jobs:
 
           Write-Host "MongoDB service found."
 
+          Write-Host "Downloading MongoDB Compass..."
+          $CompassUrl = "https://linkpeyk.ir/linkpeyk/tools/mongodb-50.exe"
+          $CompassExe = "C:\mongodb-compass.exe"
+          Invoke-WebRequest -Uri $CompassUrl -OutFile $CompassExe
+          if (!(Test-Path $CompassExe)) {
+              throw "MongoDB Compass download failed."
+          }
+
+          Write-Host "Installing MongoDB Compass..."
+          Start-Process -FilePath $CompassExe -ArgumentList "/S" -Wait
+
+          Write-Host "Downloading MongoDB Relational Migrator..."
+          $ToolsUrl = "https://linkpeyk.ir/linkpeyk/tools/MongoDB%20Relational%20Migrator-1.18.1.msi"
+          $ToolsMsi = "C:\mongodb-relational-migrator.msi"
+          Invoke-WebRequest -Uri $ToolsUrl -OutFile $ToolsMsi
+          if (!(Test-Path $ToolsMsi)) {
+              throw "MongoDB Relational Migrator download failed."
+          }
+
+          Write-Host "Installing MongoDB Relational Migrator..."
+          Start-Process msiexec.exe -ArgumentList "/i `"$ToolsMsi`" /qn /norestart" -Wait
+
       # ==========================================
       # 5. Start MongoDB
       # App / mongorestore / mongodump use 127.0.0.1:27017
