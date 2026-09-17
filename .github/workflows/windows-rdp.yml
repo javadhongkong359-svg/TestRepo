@@ -19,6 +19,7 @@ jobs:
       # cPanel File Manager: /backupdb/linkpeyk at FTP home root (chmod 750, not public_html)
       FTP_REMOTE_DIRECTORY: /backupdb/linkpeyk
       FTP_REMOTE_FILE: peyklink-backup.zip
+      FTP_REMOTE_PREVIOUS_FILE: peyklink-backup-previous.zip
       BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
@@ -142,6 +143,13 @@ jobs:
             'function Notify-AppStarted {'
             '    param([int]$ProcessId)'
             '    $stamp = Get-TehranStamp'
+            '    $backupSource = ("{0}" -f $Env:BACKUP_SOURCE).Trim().ToLowerInvariant()'
+            '    if ([string]::IsNullOrWhiteSpace($backupSource)) { $backupSource = "none" }'
+            '    $backupLine = switch ($backupSource) {'
+            '        "current" { "Backup source: <code>CURRENT</code>" }'
+            '        "previous" { "Backup source: <code>PREVIOUS / RECOVERY</code>`nReason: current backup invalid" }'
+            '        default { "Backup source: <code>NONE</code>`nMongoDB started empty`nWARNING: No valid backup available on FTP" }'
+            '    }'
             '    $msg = @('
             '        "<b>PeykLink Server</b>",'
             '        "Status: <b>APPLICATION STARTED</b>",'
@@ -150,6 +158,7 @@ jobs:
             '        "Process: <code>PeykLink.Api</code>",'
             '        ("PID: <code>{0}</code>" -f $ProcessId),'
             '        "MongoDB: <code>127.0.0.1:27017</code>",'
+            '        $backupLine,'
             '        (Format-RunLink)'
             '    ) -join "`n"'
             '    Send-TelegramNotify $msg'
@@ -200,6 +209,7 @@ jobs:
             '        ("Start time: <code>{0}</code> (Tehran)" -f $stamp),'
             '        "Runner: GitHub Actions (Windows)",'
             '        "Target file: <code>peyklink-backup.zip</code>",'
+            '        "Recovery file: <code>peyklink-backup-previous.zip</code>",'
             '        (Format-RunLink),'
             '        "",'
             '        "Please wait until backup finishes..."'
@@ -215,7 +225,15 @@ jobs:
             '        [string]$FtpHost,'
             '        [string]$RemotePath,'
             '        [string]$PhaseTimingsText = "",'
-            '        [string]$JobElapsedText = ""'
+            '        [string]$JobElapsedText = "",'
+            '        [string]$SevenZipTest = "",'
+            '        [string]$BsonValidation = "",'
+            '        [string]$FtpLocalSize = "",'
+            '        [string]$FtpRemoteSize = "",'
+            '        [string]$FtpVerified = "",'
+            '        [string]$RotationCurrentToPrevious = "",'
+            '        [string]$RotationNewToCurrent = "",'
+            '        [string]$RestoreSource = ""'
             '    )'
             '    $stamp = Get-TehranStamp'
             '    $timingLines = @()'
@@ -226,6 +244,33 @@ jobs:
             '    }'
             '    if (-not [string]::IsNullOrWhiteSpace($JobElapsedText)) {'
             '        $timingLines += ("Job elapsed (run start): <code>{0}</code>" -f $JobElapsedText)'
+            '    }'
+            '    $recoveryLines = @()'
+            '    $source = ("{0}" -f $RestoreSource).Trim().ToLowerInvariant()'
+            '    if ([string]::IsNullOrWhiteSpace($source)) { $source = ("{0}" -f $Env:BACKUP_SOURCE).Trim().ToLowerInvariant() }'
+            '    if ($source -eq "previous") {'
+            '        $recoveryLines += ""'
+            '        $recoveryLines += "Backup source: <code>PREVIOUS / RECOVERY</code>"'
+            '        $recoveryLines += "Reason: current backup invalid"'
+            '    } elseif ($source -eq "none") {'
+            '        $recoveryLines += ""'
+            '        $recoveryLines += "Backup source: <code>NONE</code>"'
+            '        $recoveryLines += "WARNING: this run started with empty MongoDB"'
+            '    } elseif ($source -eq "current") {'
+            '        $recoveryLines += ""'
+            '        $recoveryLines += "Backup source: <code>CURRENT</code>"'
+            '    }'
+            '    $verifyLines = @()'
+            '    if (-not [string]::IsNullOrWhiteSpace($SevenZipTest) -or -not [string]::IsNullOrWhiteSpace($FtpVerified)) {'
+            '        $verifyLines += ""'
+            '        $verifyLines += "<b>New backup validation</b>"'
+            '        if (-not [string]::IsNullOrWhiteSpace($SevenZipTest)) { $verifyLines += ("7z test: <code>{0}</code>" -f $SevenZipTest) }'
+            '        if (-not [string]::IsNullOrWhiteSpace($BsonValidation)) { $verifyLines += ("BSON validation: <code>{0}</code>" -f $BsonValidation) }'
+            '        if (-not [string]::IsNullOrWhiteSpace($FtpLocalSize)) { $verifyLines += ("FTP local size: <code>{0}</code>" -f $FtpLocalSize) }'
+            '        if (-not [string]::IsNullOrWhiteSpace($FtpRemoteSize)) { $verifyLines += ("FTP remote size: <code>{0}</code>" -f $FtpRemoteSize) }'
+            '        if (-not [string]::IsNullOrWhiteSpace($FtpVerified)) { $verifyLines += ("FTP upload verified: <code>{0}</code>" -f $FtpVerified) }'
+            '        if (-not [string]::IsNullOrWhiteSpace($RotationCurrentToPrevious)) { $verifyLines += ("Current -&gt; Previous: <code>{0}</code>" -f $RotationCurrentToPrevious) }'
+            '        if (-not [string]::IsNullOrWhiteSpace($RotationNewToCurrent)) { $verifyLines += ("New -&gt; Current: <code>{0}</code>" -f $RotationNewToCurrent) }'
             '    }'
             '    $msg = @('
             '        "<b>PeykLink Backup</b>",'
@@ -238,7 +283,7 @@ jobs:
             '        ("FTP Host: <code>{0}</code>" -f $FtpHost),'
             '        ("Path: <code>{0}</code>" -f $RemotePath),'
             '        (Format-RunLink)'
-            '    ) + $timingLines'
+            '    ) + $recoveryLines + $verifyLines + $timingLines'
             '    $msg = $msg -join "`n"'
             '    Send-TelegramNotify $msg'
             '}'
@@ -269,10 +314,71 @@ jobs:
             '        "",'
             '        ("Error time: <code>{0}</code> (Tehran)" -f $stamp),'
             '        ("Error: <code>{0}</code>" -f $safe),'
+            '        "Previous FTP backup preserved",'
             '        (Format-RunLink)'
             '    ) + $timingLines'
             '    $msg = $msg -join "`n"'
             '    Send-TelegramNotify $msg'
+            '}'
+            'function Notify-BackupRecovery {'
+            '    param('
+            '        [string]$CurrentExists,'
+            '        [string]$CurrentSizeText,'
+            '        [string]$CurrentValid,'
+            '        [string]$CurrentReason,'
+            '        [string]$PreviousExists,'
+            '        [string]$PreviousSizeText,'
+            '        [string]$PreviousValid,'
+            '        [string]$PreviousReason,'
+            '        [string]$SelectedSource,'
+            '        [string]$RestoreFile = ""'
+            '    )'
+            '    $stamp = Get-TehranStamp'
+            '    $source = ("{0}" -f $SelectedSource).Trim().ToLowerInvariant()'
+            '    $status = switch ($source) {'
+            '        "current" { "Status: <b>RESTORED FROM CURRENT BACKUP</b>" }'
+            '        "previous" { "Status: <b>RESTORED FROM PREVIOUS / RECOVERY</b>" }'
+            '        default { "Status: <b>NO VALID BACKUP</b>" }'
+            '    }'
+            '    $lines = @('
+            '        "<b>PeykLink Backup Recovery</b>",'
+            '        $status,'
+            '        "",'
+            '        ("Time: <code>{0}</code> (Tehran)" -f $stamp),'
+            '        "",'
+            '        "<b>Current backup</b>",'
+            '        ("Exists: <code>{0}</code>" -f (Escape-TelegramHtml $CurrentExists)),'
+            '        ("Size: <code>{0}</code> MB" -f (Escape-TelegramHtml $CurrentSizeText)),'
+            '        ("Valid: <code>{0}</code>" -f (Escape-TelegramHtml $CurrentValid))'
+            '    )'
+            '    if ($CurrentValid -ne "true" -and -not [string]::IsNullOrWhiteSpace($CurrentReason)) {'
+            '        $lines += ("Reason: <code>{0}</code>" -f (Escape-TelegramHtml $CurrentReason))'
+            '    }'
+            '    $lines += @('
+            '        "",'
+            '        "<b>Recovery backup</b>",'
+            '        ("Exists: <code>{0}</code>" -f (Escape-TelegramHtml $PreviousExists)),'
+            '        ("Size: <code>{0}</code> MB" -f (Escape-TelegramHtml $PreviousSizeText)),'
+            '        ("Valid: <code>{0}</code>" -f (Escape-TelegramHtml $PreviousValid))'
+            '    )'
+            '    if ($PreviousValid -ne "true" -and $PreviousValid -ne "n/a" -and -not [string]::IsNullOrWhiteSpace($PreviousReason)) {'
+            '        $lines += ("Reason: <code>{0}</code>" -f (Escape-TelegramHtml $PreviousReason))'
+            '    }'
+            '    $lines += ""'
+            '    if ($source -eq "current") {'
+            '        $lines += "Backup source: <code>CURRENT</code>"'
+            '        $lines += ("Restoring: <code>{0}</code>" -f (Escape-TelegramHtml $RestoreFile))'
+            '    } elseif ($source -eq "previous") {'
+            '        $lines += "Backup source: <code>PREVIOUS / RECOVERY</code>"'
+            '        $lines += "Reason: current backup invalid"'
+            '        $lines += ("Restoring: <code>{0}</code>" -f (Escape-TelegramHtml $RestoreFile))'
+            '    } else {'
+            '        $lines += "Backup source: <code>NONE</code>"'
+            '        $lines += "MongoDB started empty"'
+            '        $lines += "WARNING: No valid backup available on FTP"'
+            '    }'
+            '    $lines += (Format-RunLink)'
+            '    Send-TelegramNotify ($lines -join "`n")'
             '}'
             'function Notify-JobFinished {'
             '    param([string]$JobStatus)'
@@ -717,432 +823,129 @@ jobs:
           Write-Host "Mongo helper ready: C:\PeykLink-Mongo.ps1"
 
       # ==========================================
+      # 5b. Checkout FTP backup helper (same commit as this workflow)
+      # ==========================================
+      - name: 5b. Checkout FTP backup helper
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: 5c. Stage FTP backup helper
+        shell: powershell
+        run: |
+
+          $src = Join-Path $Env:GITHUB_WORKSPACE ".github\scripts\PeykLink-BackupFtp.ps1"
+          if (!(Test-Path $src)) {
+              throw "Backup helper missing after checkout: $src"
+          }
+          Copy-Item $src "C:\PeykLink-BackupFtp.ps1" -Force
+          Write-Host "Backup helper staged: C:\PeykLink-BackupFtp.ps1"
+
+      # ==========================================
       # 6. Download MongoDB Backup from FTP
+      # Tries current, then previous. Invalid local copies are deleted;
+      # FTP files are never deleted during restore.
       # ==========================================
       - name: 6. Download MongoDB Backup from FTP
         shell: powershell
         run: |
 
-          $BackupZip = "C:\peyklink-backup.zip"
-
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_HOST) -or $Env:FTP_HOST -eq "2193182619.cloudydl.com" -or $Env:FTP_HOST -eq "linkpeyk.ir") {
-              $Env:FTP_HOST = "ftp.linkpeyk.ir"
+          if (!(Test-Path "C:\PeykLink-BackupFtp.ps1")) {
+              throw "Backup helper missing: C:\PeykLink-BackupFtp.ps1"
           }
-
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_PORT)) {
-              $Env:FTP_PORT = "21"
-          }
-
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_USERNAME) -or $Env:FTP_USERNAME -eq "pz25177") {
-              $Env:FTP_USERNAME = "xuljpwea"
-          }
-
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_PASSWORD)) {
-              throw "FTP_PASSWORD GitHub Secret is not configured."
-          }
-
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_DIRECTORY) -or $Env:FTP_REMOTE_DIRECTORY -match "pz25177|parspack|public_html/peyklink") {
-              $Env:FTP_REMOTE_DIRECTORY = "/backupdb/linkpeyk"
-          }
-
-          if ([string]::IsNullOrWhiteSpace($Env:FTP_REMOTE_FILE)) {
-              $Env:FTP_REMOTE_FILE = "peyklink-backup.zip"
-          }
-
-          $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
-
-          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink" -or $remoteDir -match "pz25177|parspack|public_html/peyklink") {
-              $remoteDir = "/backupdb/linkpeyk"
-          }
-          else {
-              if (-not $remoteDir.StartsWith("/")) {
-                  $remoteDir = "/" + $remoteDir
-              }
-
-              $remoteDir = $remoteDir.TrimEnd("/")
-          }
-
-          $remoteFile = $Env:FTP_REMOTE_FILE.Trim()
-          if ([string]::IsNullOrWhiteSpace($remoteFile)) {
-              $remoteFile = "peyklink-backup.zip"
-          }
-
-          # Same File Manager folder the bot uploads to: /backupdb/linkpeyk at FTP home root.
-          # %2F (server-root) 550s on this host; home-relative URL matches the bot.
-          $remotePath = "$remoteDir/$remoteFile"
-          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
-          $ftpUriAbsolute = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/%2F$($remotePath.TrimStart('/'))"
+          . "C:\PeykLink-BackupFtp.ps1"
 
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host "       >>> DOWNLOADING BACKUP FROM FTP <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "FTP host : $($Env:FTP_HOST)"
-          Write-Host "FTP path : $remotePath"
-          Write-Host "FTP URI  : $ftpUri"
-          Write-Host "Local    : $BackupZip"
-          Write-Host "Must match bot upload path Backup.Ftp.RemoteDirectory/RemoteFileName"
-
-          if (Test-Path $BackupZip) {
-              Remove-Item $BackupZip -Force
-          }
-
-          $curlCfg = "C:\ftp-curl.conf"
-          "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
-            Set-Content -Path $curlCfg -Encoding ascii
-
-          function Invoke-FtpCurl([string]$Uri, [string]$OutFile) {
-              $prev = $ErrorActionPreference
-              $ErrorActionPreference = 'Continue'
-              & curl.exe `
-                --config $curlCfg `
-                --show-error `
-                --fail `
-                --connect-timeout 30 `
-                --ftp-pasv `
-                -o $OutFile `
-                $Uri
-              $code = $LASTEXITCODE
-              $ErrorActionPreference = $prev
-              return $code
-          }
-
-          $curlExit = 1
 
           try {
-              Write-Host "Trying home-relative FTP path..."
-              $curlExit = Invoke-FtpCurl $ftpUri $BackupZip
-
-              if ($curlExit -ne 0) {
-                  Write-Host "Home-relative download failed (curl $curlExit). Trying server-root path..." -ForegroundColor Yellow
-                  if (Test-Path $BackupZip) {
-                      Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
-                  }
-                  $curlExit = Invoke-FtpCurl $ftpUriAbsolute $BackupZip
-              }
+              $decision = Select-PeykLinkRestoreBackup
           }
           finally {
-              Remove-Item $curlCfg -Force -ErrorAction SilentlyContinue
+              Remove-PeykLinkFtpCurlConfig
           }
 
-          $hasBackup = $false
-
-          if ($curlExit -eq 0 -and (Test-Path $BackupZip)) {
-              $size = (Get-Item $BackupZip).Length
-
-              Write-Host "Download completed."
-              Write-Host "Size: $size bytes"
-
-              if ($size -gt 0) {
-                  $hasBackup = $true
+          if (Test-Path "C:\PeykLink-TelegramNotify.ps1") {
+              . "C:\PeykLink-TelegramNotify.ps1"
+              $previousValidText = if ($decision.Previous.Valid) {
+                  "true"
+              } elseif ($decision.Source -eq "current") {
+                  "n/a"
+              } else {
+                  "false"
               }
-              else {
-                  Write-Host "Downloaded file is empty. Ignoring it." -ForegroundColor Yellow
-                  Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
-              }
-          }
-          else {
-              Write-Host ""
-              Write-Host "No existing backup on FTP (first run or file missing)." -ForegroundColor Yellow
-              Write-Host "Continuing with an empty MongoDB. A full backup will be uploaded at the end."
-
-              if (Test-Path $BackupZip) {
-                  Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
-              }
+              Notify-BackupRecovery `
+                -CurrentExists ($(if ($decision.Current.Exists) { "true" } else { "false" })) `
+                -CurrentSizeText $decision.Current.SizeMb `
+                -CurrentValid ($(if ($decision.Current.Valid) { "true" } else { "false" })) `
+                -CurrentReason $decision.Current.Reason `
+                -PreviousExists ($(if ($decision.Previous.Exists) { "true" } else { "false" })) `
+                -PreviousSizeText $decision.Previous.SizeMb `
+                -PreviousValid $previousValidText `
+                -PreviousReason $decision.Previous.Reason `
+                -SelectedSource $decision.Source `
+                -RestoreFile $decision.RestoreFile
           }
 
-          if ($hasBackup) {
-              Add-Content -Path $Env:GITHUB_ENV -Value "BACKUP_FOUND=true"
-              Write-Host "BACKUP_FOUND=true"
-          }
-
-          # curl 78 must not fail the job: missing backup is a first-run case.
+          # Missing/invalid backups must not fail the job: empty MongoDB is allowed only then.
           exit 0
 
       # ==========================================
-      # 7. Extract MongoDB Backup
+      # 7. Verify extracted MongoDB Backup
+      # Extraction and CLI session restore already happened in step 6
+      # from the same selected archive.
       # ==========================================
-      - name: 7. Extract MongoDB Backup
+      - name: 7. Verify extracted MongoDB Backup
         if: env.BACKUP_FOUND == 'true'
-        env:
-          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
         shell: powershell
         run: |
 
-          $BackupZip = "C:\peyklink-backup.zip"
           $ExtractPath = "C:\PeykLinkMongoBackup"
-
           Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "       >>> EXTRACTING MONGODB BACKUP <<<" -ForegroundColor Cyan
+          Write-Host "       >>> VERIFYING EXTRACTED BACKUP <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host ("Selected restore source: {0}" -f $Env:BACKUP_SOURCE)
 
-          # ==========================================
-          # Check backup
-          # ==========================================
-
-          if (!(Test-Path $BackupZip)) {
-              throw "Backup ZIP was not found: $BackupZip"
+          if (!(Test-Path $ExtractPath)) {
+              throw "Extracted backup was not found: $ExtractPath"
           }
 
-          $BackupInfo = Get-Item $BackupZip
-
-          Write-Host "Backup file : $($BackupInfo.FullName)"
-          Write-Host "Backup size : $($BackupInfo.Length) bytes"
-
-          if ($BackupInfo.Length -eq 0) {
-              throw "Backup ZIP is empty."
+          $BsonFiles = @(Get-ChildItem $ExtractPath -Recurse -Filter "*.bson" -File -ErrorAction SilentlyContinue)
+          if ($BsonFiles.Count -eq 0) {
+              throw "No BSON files were found in the selected backup extract."
           }
 
-          # ==========================================
-          # Prepare extraction directory
-          # ==========================================
-
-          Write-Host ""
-          Write-Host "Preparing extraction directory..."
-
-          if (Test-Path $ExtractPath) {
-
-              Remove-Item `
-                $ExtractPath `
-                -Recurse `
-                -Force `
-                -ErrorAction SilentlyContinue
-          }
-
-          New-Item `
-            -ItemType Directory `
-            -Path $ExtractPath `
-            -Force | Out-Null
-
-          # ==========================================
-          # Find 7-Zip
-          # ==========================================
-
-          Write-Host ""
-          Write-Host "Searching for 7-Zip..."
-
-          $SevenZipPaths = @(
-              "C:\Program Files\7-Zip\7z.exe",
-              "C:\Program Files (x86)\7-Zip\7z.exe"
-          )
-
-          $SevenZip = $null
-
-          foreach ($Path in $SevenZipPaths) {
-
-              if (Test-Path $Path) {
-
-                  $SevenZip = $Path
-
-                  Write-Host "7-Zip found:"
-                  Write-Host $SevenZip
-
-                  break
-              }
-          }
-
-          # ==========================================
-          # Install 7-Zip if necessary
-          # ==========================================
-
-          if ($null -eq $SevenZip) {
-
-              Write-Host ""
-              Write-Host "7-Zip not found. Installing 7-Zip..."
-
-              winget install `
-                --id 7zip.7zip `
-                --exact `
-                --silent `
-                --accept-package-agreements `
-                --accept-source-agreements
-
-              Start-Sleep -Seconds 5
-
-              # Search again
-              foreach ($Path in $SevenZipPaths) {
-
-                  if (Test-Path $Path) {
-
-                      $SevenZip = $Path
-
-                      break
-                  }
-              }
-          }
-
-          # ==========================================
-          # Final 7-Zip check
-          # ==========================================
-
-          if ($null -eq $SevenZip -or !(Test-Path $SevenZip)) {
-
-              Write-Host ""
-              Write-Host "ERROR: 7-Zip was not found." -ForegroundColor Red
-
-              throw "7-Zip installation failed."
-          }
-
-          Write-Host ""
-          Write-Host "7-Zip executable:"
-          Write-Host $SevenZip
-
-          # ==========================================
-          # Check password
-          # ==========================================
-
-          if ([string]::IsNullOrWhiteSpace($Env:BACKUP_PASSWORD)) {
-
-              Write-Host ""
-              Write-Host "ERROR: BACKUP_PASSWORD is empty." -ForegroundColor Red
-
-              throw "BACKUP_PASSWORD GitHub Secret is not configured."
-          }
-
-          Write-Host ""
-          Write-Host "Backup password detected."
-          Write-Host "Password itself will not be displayed."
-
-          # ==========================================
-          # Test ZIP archive first
-          # ==========================================
-
-          Write-Host ""
-          Write-Host "Testing ZIP archive..."
-
-          & $SevenZip t `
-            $BackupZip `
-            "-p$Env:BACKUP_PASSWORD"
-
-          $TestExitCode = $LASTEXITCODE
-
-          if ($TestExitCode -ne 0) {
-
-              Write-Host ""
-              Write-Host "==================================================" -ForegroundColor Red
-              Write-Host "       >>> ZIP TEST FAILED <<<" -ForegroundColor Red
-              Write-Host "==================================================" -ForegroundColor Red
-
-              throw "7-Zip could not read/test the backup. Check ZIP integrity or BACKUP_PASSWORD."
-          }
-
-          Write-Host ""
-          Write-Host "ZIP archive test passed." -ForegroundColor Green
-
-          # ==========================================
-          # Extract using 7-Zip
-          # ==========================================
-
-          Write-Host ""
-          Write-Host "Extracting backup with 7-Zip..."
-
-          & $SevenZip x `
-            $BackupZip `
-            "-o$ExtractPath" `
-            "-p$Env:BACKUP_PASSWORD" `
-            "-y"
-
-          $ExtractExitCode = $LASTEXITCODE
-
-          if ($ExtractExitCode -ne 0) {
-
-              Write-Host ""
-              Write-Host "==================================================" -ForegroundColor Red
-              Write-Host "       >>> BACKUP EXTRACTION FAILED <<<" -ForegroundColor Red
-              Write-Host "==================================================" -ForegroundColor Red
-              Write-Host "7-Zip Exit Code: $ExtractExitCode"
-
-              throw "Backup extraction failed."
-          }
-
-          # ==========================================
-          # Verify extracted files
-          # ==========================================
-
-          Write-Host ""
-          Write-Host "Checking extracted files..."
-
-          $ExtractedFiles = Get-ChildItem `
-            $ExtractPath `
-            -Recurse `
-            -File `
-            -ErrorAction SilentlyContinue
-
-          if ($null -eq $ExtractedFiles -or $ExtractedFiles.Count -eq 0) {
-
-              Write-Host ""
-              Write-Host "ERROR: No files were extracted." -ForegroundColor Red
-
-              throw "Backup extraction produced no files."
-          }
-
-          Write-Host ""
-          Write-Host "Extracted file count: $($ExtractedFiles.Count)"
-
-          Write-Host ""
-          Write-Host "Extracted files:"
-
-          $ExtractedFiles |
-            Select-Object FullName, Length |
-            Format-Table -AutoSize
-
-          # ==========================================
-          # Check BSON files
-          # ==========================================
-
-          $BsonFiles = Get-ChildItem `
-            $ExtractPath `
-            -Recurse `
-            -Filter "*.bson" `
-            -File `
-            -ErrorAction SilentlyContinue
-
-          if ($null -eq $BsonFiles -or $BsonFiles.Count -eq 0) {
-
-              Write-Host ""
-              Write-Host "WARNING: No BSON files were found." -ForegroundColor Yellow
-              Write-Host "The archive may contain a different structure."
-          }
-          else {
-
-              Write-Host ""
-              Write-Host "BSON files found: $($BsonFiles.Count)"
-
-              $BsonFiles |
-                Select-Object FullName, Length |
-                Format-Table -AutoSize
-          }
-
-          Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "       >>> BACKUP EXTRACTED SUCCESSFULLY <<<" -ForegroundColor Green
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "Extract path: $ExtractPath"
-
-          $CliSessionsZip = Get-ChildItem `
-            $ExtractPath `
-            -Recurse `
-            -Filter "peyklink-cli-sessions.zip" `
-            -File `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+          Write-Host ("BSON files ready for restore: {0}" -f $BsonFiles.Count) -ForegroundColor Green
+          $BsonFiles | Select-Object FullName, Length | Format-Table -AutoSize
 
           $CliSessionsDest = "C:\PeykLinkCliSessions"
-          if (Test-Path $CliSessionsDest) {
-              Remove-Item $CliSessionsDest -Recurse -Force -ErrorAction SilentlyContinue
-          }
-
-          if ($null -ne $CliSessionsZip) {
-              Write-Host "Restoring CLI session files from backup..."
-              New-Item -ItemType Directory -Path $CliSessionsDest -Force | Out-Null
-              & $SevenZip x `
-                $CliSessionsZip.FullName `
-                "-o$CliSessionsDest" `
-                "-y"
-              Write-Host "CLI sessions staged at $CliSessionsDest"
+          $hostSessions = @(Get-ChildItem $CliSessionsDest -Recurse -File -Filter "*.session" -ErrorAction SilentlyContinue)
+          if ($hostSessions.Count -gt 0) {
+              Write-Host ("CLI sessions already staged from the selected backup: {0}" -f $hostSessions.Count)
           }
           else {
-              Write-Host "No peyklink-cli-sessions.zip in backup (older backup or first run)."
+              $CliSessionsZip = Get-ChildItem $ExtractPath -Recurse -Filter "peyklink-cli-sessions.zip" -File -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+              if ($null -ne $CliSessionsZip) {
+                  $SevenZipPaths = @(
+                      "C:\Program Files\7-Zip\7z.exe",
+                      "C:\Program Files (x86)\7-Zip\7z.exe"
+                  )
+                  $SevenZip = $SevenZipPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+                  if ($null -eq $SevenZip) { throw "7-Zip was not found while restoring CLI sessions." }
+                  Write-Host "Restoring CLI session files from the selected backup..."
+                  New-Item -ItemType Directory -Path $CliSessionsDest -Force | Out-Null
+                  & $SevenZip x $CliSessionsZip.FullName "-o$CliSessionsDest" "-y"
+                  Write-Host "CLI sessions staged at $CliSessionsDest"
+              }
+              else {
+                  Write-Host "No peyklink-cli-sessions.zip in selected backup (older backup or first run)."
+              }
           }
+
       # ==========================================
       # 8. Restore MongoDB
       # ==========================================
@@ -1266,10 +1069,19 @@ jobs:
               throw "MongoDB restore failed."
           }
 
+          $restoreSource = ("{0}" -f $Env:BACKUP_SOURCE).Trim().ToLowerInvariant()
+          if ($restoreSource -eq "previous") {
+              Write-Host "MongoDB restored successfully from PREVIOUS backup." -ForegroundColor Yellow
+          }
+          else {
+              Write-Host "MongoDB restored successfully from CURRENT backup." -ForegroundColor Green
+          }
+
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "       >>> MONGODB RESTORE COMPLETED <<<" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Green
+          Write-Host ("Selected restore source: {0}" -f $restoreSource.ToUpper())
 
           Write-Host ""
           Write-Host "Removing local backup files after restore..."
@@ -1718,7 +1530,15 @@ jobs:
                       [string]$FtpHost,
                       [string]$RemotePath,
                       [string]$PhaseTimingsText = "",
-                      [string]$JobElapsedText = ""
+                      [string]$JobElapsedText = "",
+                      [string]$SevenZipTest = "",
+                      [string]$BsonValidation = "",
+                      [string]$FtpLocalSize = "",
+                      [string]$FtpRemoteSize = "",
+                      [string]$FtpVerified = "",
+                      [string]$RotationCurrentToPrevious = "",
+                      [string]$RotationNewToCurrent = "",
+                      [string]$RestoreSource = ""
                   )
                   Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow
               }
@@ -1728,6 +1548,21 @@ jobs:
                       [string]$DurationText = "",
                       [string]$PhaseTimingsText = "",
                       [string]$JobElapsedText = ""
+                  )
+                  Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow
+              }
+              function Notify-BackupRecovery {
+                  param(
+                      [string]$CurrentExists,
+                      [string]$CurrentSizeText,
+                      [string]$CurrentValid,
+                      [string]$CurrentReason,
+                      [string]$PreviousExists,
+                      [string]$PreviousSizeText,
+                      [string]$PreviousValid,
+                      [string]$PreviousReason,
+                      [string]$SelectedSource,
+                      [string]$RestoreFile = ""
                   )
                   Write-Host "Notifier missing; skip Telegram." -ForegroundColor Yellow
               }
@@ -2008,73 +1843,23 @@ jobs:
 
           Write-Host "ZIP created. Size: $zipSize bytes"
 
-          $remoteDir = $Env:FTP_REMOTE_DIRECTORY.Trim().Replace('\', '/')
-
-          if ([string]::IsNullOrWhiteSpace($remoteDir) -or $remoteDir -eq "/" -or $remoteDir -eq "/peyklink" -or $remoteDir -match "pz25177|parspack|public_html/peyklink") {
-              $remoteDir = "/backupdb/linkpeyk"
+          if (!(Test-Path "C:\PeykLink-BackupFtp.ps1")) {
+              throw "Backup helper missing: C:\PeykLink-BackupFtp.ps1"
           }
-          else {
-              if (-not $remoteDir.StartsWith("/")) {
-                  $remoteDir = "/" + $remoteDir
-              }
+          . "C:\PeykLink-BackupFtp.ps1"
 
-              $remoteDir = $remoteDir.TrimEnd("/")
-          }
-
-          $remoteFile = $Env:FTP_REMOTE_FILE.Trim()
-          if ([string]::IsNullOrWhiteSpace($remoteFile)) {
-              $remoteFile = "peyklink-backup.zip"
-          }
-
-          # Same File Manager folder the bot uploads to: /backupdb/linkpeyk at FTP home root.
-          $remotePath = "$remoteDir/$remoteFile"
-          $ftpUri = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)$remotePath"
-          $ftpUriAbsolute = "ftp://$($Env:FTP_HOST):$($Env:FTP_PORT)/%2F$($remotePath.TrimStart('/'))"
-
-          Write-Host "Uploading to FTP path: $remotePath"
+          Write-Host "Validating new local backup before any FTP change..."
           Write-Host "Same path as bot Backup.Ftp.RemoteDirectory/RemoteFileName"
-          Write-Host "Same filename will be overwritten for the next restore."
 
           Start-BackupPhase "FTP upload"
-
-          $curlCfg = "C:\ftp-curl-upload.conf"
-          "user = `"$($Env:FTP_USERNAME):$($Env:FTP_PASSWORD)`"" |
-            Set-Content -Path $curlCfg -Encoding ascii
-
-          function Invoke-FtpUpload([string]$Uri) {
-              $prev = $ErrorActionPreference
-              $ErrorActionPreference = 'Continue'
-              & curl.exe `
-                --config $curlCfg `
-                --show-error `
-                --fail `
-                --connect-timeout 30 `
-                --retry 3 `
-                --retry-delay 5 `
-                --ftp-pasv `
-                --ftp-create-dirs `
-                -T $BackupZip `
-                $Uri
-              $code = $LASTEXITCODE
-              $ErrorActionPreference = $prev
-              return $code
-          }
-
           try {
-              $uploadExit = Invoke-FtpUpload $ftpUri
-              if ($uploadExit -ne 0) {
-                  Write-Host "Home-relative upload failed (curl $uploadExit). Trying server-root path..." -ForegroundColor Yellow
-                  $uploadExit = Invoke-FtpUpload $ftpUriAbsolute
-              }
-
-              if ($uploadExit -ne 0) {
-                  throw "FTP upload failed."
-              }
+              $publish = Publish-PeykLinkBackupToFtp -LocalZip $BackupZip
+              $remotePath = $publish.RemotePath
+              $zipSize = [long]$publish.LocalSize
           }
           finally {
-              Remove-Item $curlCfg -Force -ErrorAction SilentlyContinue
+              Remove-PeykLinkFtpCurlConfig
           }
-
           Complete-BackupPhase
 
           Write-Host ""
@@ -2096,16 +1881,22 @@ jobs:
             -DurationText $durationText `
             -SizeText $sizeText `
             -ZipBytes $zipSize `
-            -BsonCount $bsonFiles.Count `
+            -BsonCount $publish.BsonCount `
             -FtpHost $Env:FTP_HOST `
             -RemotePath $remotePath `
             -PhaseTimingsText $phaseTimingsText `
-            -JobElapsedText $jobElapsedText
+            -JobElapsedText $jobElapsedText `
+            -SevenZipTest $publish.SevenZip `
+            -BsonValidation $publish.Bson `
+            -FtpLocalSize $publish.LocalSize `
+            -FtpRemoteSize $publish.RemoteSize `
+            -FtpVerified $publish.Verified `
+            -RotationCurrentToPrevious $publish.CurrentToPrevious `
+            -RotationNewToCurrent $publish.NewToCurrent `
+            -RestoreSource $Env:BACKUP_SOURCE
 
           Write-Host "Removing local backup files after FTP upload..."
-          if (Test-Path $BackupZip) {
-              Remove-Item $BackupZip -Force -ErrorAction SilentlyContinue
-          }
+          Clear-PeykLinkLocalBackupArtifacts
           if (Test-Path $DumpOut) {
               Remove-Item $DumpOut -Recurse -Force -ErrorAction SilentlyContinue
           }
